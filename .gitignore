@@ -1,0 +1,45 @@
+```
+# Build artifacts
+build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+
+# Dependencies
+vendor/
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# C++ specific
+*.obj
+*.ilk
+*.pdb
+*.exp
+*.lib
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# CMake
+cmake-build-*/
+_ConsolidateDebugPrefs.xml
+*.VC.db
+*.VC.VC.opendb
+```
