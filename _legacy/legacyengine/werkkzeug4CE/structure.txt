@@ -1,0 +1,460 @@
+D:\gameres\Frangine\_legacy\legacyengine\werkkzeug4CE
+├── altona
+│   ├── bin
+│   │   ├── asc.exe
+│   │   ├── compoview.exe
+│   │   ├── makeproject.exe
+│   │   ├── planpad.config.txt
+│   │   ├── planpad.exe
+│   │   └── wz4ops.exe
+│   ├── doc
+│   │   ├── altona.props
+│   │   ├── altona.rules
+│   │   ├── altona.targets
+│   │   ├── altona.win32.debug.props
+│   │   ├── altona.win32.debugfast.props
+│   │   ├── altona.win32.props
+│   │   ├── altona.win32.shell.props
+│   │   ├── altona.xml
+│   │   ├── howto_add_an_icon.txt
+│   │   ├── howto_start.txt
+│   │   ├── nasm.rules
+│   │   ├── readme_linux.txt
+│   │   ├── yasm.props
+│   │   ├── yasm.rules
+│   │   ├── yasm.targets
+│   │   └── yasm.xml
+│   ├── main
+│   │   ├── base
+│   │   │   ├── Makefile.linux.boot
+│   │   │   ├── base.mp.txt
+│   │   │   ├── devices.hpp
+│   │   │   ├── devices_win.cpp
+│   │   │   ├── gl.h
+│   │   │   ├── glext.h
+│   │   │   ├── glprocs.c
+│   │   │   ├── glprocs.h
+│   │   │   ├── graphics.cpp
+│   │   │   ├── graphics.hpp
+│   │   │   ├── graphics_blank.cpp
+│   │   │   ├── graphics_dx11.cpp
+│   │   │   ├── graphics_dx11_private.hpp
+│   │   │   ├── graphics_dx9.cpp
+│   │   │   ├── graphics_dx9_private.hpp
+│   │   │   ├── graphics_ogl2.cpp
+│   │   │   ├── graphics_ogles2.cpp
+│   │   │   ├── graphics_ogles2_private.hpp
+│   │   │   ├── input2.cpp
+│   │   │   ├── input2.hpp
+│   │   │   ├── math.cpp
+│   │   │   ├── math.hpp
+│   │   │   ├── npplugin.cpp
+│   │   │   ├── npplugin.def
+│   │   │   ├── serialize.cpp
+│   │   │   ├── serialize.hpp
+│   │   │   ├── sound.cpp
+│   │   │   ├── sound.hpp
+│   │   │   ├── system.cpp
+│   │   │   ├── system.hpp
+│   │   │   ├── system_ios.cpp
+│   │   │   ├── system_ios.hpp
+│   │   │   ├── system_linux.cpp
+│   │   │   ├── system_win.cpp
+│   │   │   ├── system_xsi.cpp
+│   │   │   ├── system_xsi.hpp
+│   │   │   ├── types.cpp
+│   │   │   ├── types.hpp
+│   │   │   ├── types2.cpp
+│   │   │   ├── types2.hpp
+│   │   │   ├── warnings.hpp
+│   │   │   ├── wglext.h
+│   │   │   ├── windows.cpp
+│   │   │   ├── windows.hpp
+│   │   │   └── windows_xlib.cpp
+│   │   ├── extra
+│   │   │   ├── blobheap.cpp
+│   │   │   ├── blobheap.hpp
+│   │   │   ├── extra.mp.txt
+│   │   │   ├── freecam.cpp
+│   │   │   ├── freecam.hpp
+│   │   │   ├── mcubes.cpp
+│   │   │   └── mcubes.hpp
+│   │   ├── gui
+│   │   │   ├── 3dwindow.cpp
+│   │   │   ├── 3dwindow.hpp
+│   │   │   ├── borders.cpp
+│   │   │   ├── borders.hpp
+│   │   │   ├── color.cpp
+│   │   │   ├── color.hpp
+│   │   │   ├── controls.cpp
+│   │   │   ├── controls.hpp
+│   │   │   ├── dialog.cpp
+│   │   │   ├── dialog.hpp
+│   │   │   ├── frames.cpp
+│   │   │   ├── frames.hpp
+│   │   │   ├── gui.cpp
+│   │   │   ├── gui.hpp
+│   │   │   ├── gui.mp.txt
+│   │   │   ├── listwindow.cpp
+│   │   │   ├── listwindow.hpp
+│   │   │   ├── manager.cpp
+│   │   │   ├── manager.hpp
+│   │   │   ├── overlapped.cpp
+│   │   │   ├── overlapped.hpp
+│   │   │   ├── tabs.cpp
+│   │   │   ├── tabs.hpp
+│   │   │   ├── textwindow.cpp
+│   │   │   ├── textwindow.hpp
+│   │   │   ├── timeline.cpp
+│   │   │   ├── timeline.hpp
+│   │   │   ├── window.cpp
+│   │   │   ├── window.hpp
+│   │   │   ├── wire.cpp
+│   │   │   └── wire.hpp
+│   │   ├── network
+│   │   │   ├── http.cpp
+│   │   │   ├── http.hpp
+│   │   │   ├── miniftp.cpp
+│   │   │   ├── miniftp.hpp
+│   │   │   ├── netdebug.cpp
+│   │   │   ├── netdebug.hpp
+│   │   │   ├── netdebug_plugins.hpp
+│   │   │   ├── network.mp.txt
+│   │   │   ├── sockets.cpp
+│   │   │   ├── sockets.hpp
+│   │   │   ├── sockets_bsd.cpp
+│   │   │   └── sockets_dummy.cpp
+│   │   ├── ogg
+│   │   │   ├── ogg.cpp
+│   │   │   ├── ogg.hpp
+│   │   │   ├── ogg.mp.txt
+│   │   │   └── stb_vorbis.h
+│   │   ├── shadercomp
+│   │   │   ├── asc_doc.cpp
+│   │   │   ├── asc_doc.hpp
+│   │   │   ├── asc_output.cpp
+│   │   │   ├── asc_parser.cpp
+│   │   │   ├── compile_cg.cpp
+│   │   │   ├── compile_dx.cpp
+│   │   │   ├── shadercomp.cpp
+│   │   │   ├── shadercomp.hpp
+│   │   │   ├── shadercomp.mp.txt
+│   │   │   ├── shaderdis.cpp
+│   │   │   └── shaderdis.hpp
+│   │   ├── util
+│   │   │   ├── .gitignore
+│   │   │   ├── Makefile.linux.boot
+│   │   │   ├── ReadMe.txt
+│   │   │   ├── algorithms.cpp
+│   │   │   ├── algorithms.hpp
+│   │   │   ├── animation.cpp
+│   │   │   ├── animation.hpp
+│   │   │   ├── bitio.cpp
+│   │   │   ├── bitio.hpp
+│   │   │   ├── camera.cpp
+│   │   │   ├── camera.hpp
+│   │   │   ├── effect.cpp
+│   │   │   ├── effect.hpp
+│   │   │   ├── fastcompress.cpp
+│   │   │   ├── fastcompress.hpp
+│   │   │   ├── image.cpp
+│   │   │   ├── image.hpp
+│   │   │   ├── ipp.cpp
+│   │   │   ├── ipp.hpp
+│   │   │   ├── json.hpp
+│   │   │   ├── movieplayer.cpp
+│   │   │   ├── movieplayer.hpp
+│   │   │   ├── musicplayer.cpp
+│   │   │   ├── musicplayer.hpp
+│   │   │   ├── painter.cpp
+│   │   │   ├── painter.hpp
+│   │   │   ├── perfmon.cpp
+│   │   │   ├── perfmon.hpp
+│   │   │   ├── rasterizer.cpp
+│   │   │   ├── rasterizer.hpp
+│   │   │   ├── scanconfig.cpp
+│   │   │   ├── scanconfig.hpp
+│   │   │   ├── scanner.cpp
+│   │   │   ├── scanner.hpp
+│   │   │   ├── shaders.asc
+│   │   │   ├── simd_float.hpp
+│   │   │   ├── stb_image.c
+│   │   │   ├── stb_image_write.h
+│   │   │   ├── taskscheduler.cpp
+│   │   │   ├── taskscheduler.hpp
+│   │   │   └── util.mp.txt
+│   │   ├── wiki
+│   │   │   ├── layoutwindow.cpp
+│   │   │   ├── layoutwindow.hpp
+│   │   │   ├── markup.cpp
+│   │   │   ├── markup.hpp
+│   │   │   ├── pdf.cpp
+│   │   │   ├── pdf.hpp
+│   │   │   ├── resources.cpp
+│   │   │   ├── resources.hpp
+│   │   │   └── wiki.mp.txt
+│   │   └── wz4lib
+│   │       ├── .gitignore
+│   │       ├── basic.cpp
+│   │       ├── basic.hpp
+│   │       ├── basic_ops.ops
+│   │       ├── build.cpp
+│   │       ├── build.hpp
+│   │       ├── doc.cpp
+│   │       ├── doc.hpp
+│   │       ├── doc.txt
+│   │       ├── gui.cpp
+│   │       ├── gui.hpp
+│   │       ├── incbin.asm
+│   │       ├── main.cpp
+│   │       ├── main.hpp
+│   │       ├── poc.cpp
+│   │       ├── poc.hpp
+│   │       ├── poc_ops.ops
+│   │       ├── script.cpp
+│   │       ├── script.hpp
+│   │       ├── serials.hpp
+│   │       ├── stb_vorbis.inl
+│   │       ├── todo.txt
+│   │       ├── version.hpp
+│   │       ├── videoencoder.hpp
+│   │       ├── videoencoder_win.cpp
+│   │       ├── view.cpp
+│   │       ├── view.hpp
+│   │       ├── werkkzeug4.wire.txt
+│   │       ├── wiki.cpp
+│   │       ├── wiki.hpp
+│   │       ├── wz4lib.mp.txt
+│   │       └── wz4shaders.asc
+│   ├── tools
+│   │   ├── asc
+│   │   │   ├── asc.mp.txt
+│   │   │   ├── longtest.txt
+│   │   │   ├── main.cpp
+│   │   │   ├── main.hpp
+│   │   │   ├── new.cpp
+│   │   │   ├── output.cpp
+│   │   │   ├── parse.cpp
+│   │   │   ├── test.txt
+│   │   │   └── todo.txt
+│   │   ├── compoview
+│   │   │   ├── compoview.mp.txt
+│   │   │   ├── image_win.cpp
+│   │   │   ├── image_win.hpp
+│   │   │   ├── main.cpp
+│   │   │   ├── main.hpp
+│   │   │   └── readme.txt
+│   │   ├── makeproject
+│   │   │   ├── Makefile.linux.boot
+│   │   │   ├── doc.cpp
+│   │   │   ├── doc.hpp
+│   │   │   ├── doc_makefile.cpp
+│   │   │   ├── doc_output.cpp
+│   │   │   ├── main.cpp
+│   │   │   ├── main.hpp
+│   │   │   ├── makeproject.mp.txt
+│   │   │   ├── makeproject.txt
+│   │   │   └── todo.txt
+│   │   ├── planpad
+│   │   │   ├── spelldict
+│   │   │   │   ├── dict_de.txt
+│   │   │   │   ├── dict_en.txt
+│   │   │   │   ├── user.txt
+│   │   │   │   ├── user_de.txt
+│   │   │   │   └── user_en.txt
+│   │   │   ├── icon.ico
+│   │   │   ├── incbin.asm
+│   │   │   ├── index.wiki.txt
+│   │   │   ├── main.cpp
+│   │   │   ├── main.hpp
+│   │   │   ├── planpad.mp.txt
+│   │   │   ├── planpad.wire.txt
+│   │   │   └── resource.rc
+│   │   └── wz4ops
+│   │       ├── doc.cpp
+│   │       ├── doc.hpp
+│   │       ├── main.cpp
+│   │       ├── main.hpp
+│   │       ├── output.cpp
+│   │       ├── parse.cpp
+│   │       ├── test.txt
+│   │       ├── wikitext.cpp
+│   │       └── wz4ops.mp.txt
+│   ├── .gitignore
+│   ├── Makefile.linux.boot
+│   ├── altona.doc.txt
+│   ├── altona_config.hpp
+│   ├── buildtools.bat
+│   └── tag.txt
+├── data
+│   ├── bin
+│   │   ├── changes.txt
+│   │   └── release_packages.bat
+│   └── Tutorial.wz4
+├── wz4
+│   ├── werkkzeug4
+│   │   ├── .gitignore
+│   │   ├── icon.ico
+│   │   ├── icon.rc
+│   │   ├── main.cpp
+│   │   ├── main.hpp
+│   │   ├── touchlibs.cpp
+│   │   └── werkkzeug4.mp.txt
+│   ├── wz4frlib
+│   │   ├── fr033
+│   │   │   ├── w3texlib.hpp
+│   │   │   └── w3texlib_vc80_Rel.lib
+│   │   ├── adf.cpp
+│   │   ├── adf.hpp
+│   │   ├── adf_ops.ops
+│   │   ├── adf_shader.asc
+│   │   ├── bspline.cpp
+│   │   ├── bspline.hpp
+│   │   ├── chaos_font.cpp
+│   │   ├── chaos_font.hpp
+│   │   ├── chaos_font_ops.ops
+│   │   ├── chaosfx.cpp
+│   │   ├── chaosfx.hpp
+│   │   ├── chaosfx_ops.ops
+│   │   ├── chaosfx_shader.asc
+│   │   ├── chaosmesh_code.cpp
+│   │   ├── chaosmesh_code.hpp
+│   │   ├── chaosmesh_fx.cpp
+│   │   ├── chaosmesh_fx.hpp
+│   │   ├── chaosmesh_ops.ops
+│   │   ├── chaosmesh_xsi.cpp
+│   │   ├── chaosmesh_xsi.hpp
+│   │   ├── easter.cpp
+│   │   ├── easter.hpp
+│   │   ├── easter_ops.ops
+│   │   ├── easter_shader.asc
+│   │   ├── fr033.cpp
+│   │   ├── fr033.hpp
+│   │   ├── fr033_ops.ops
+│   │   ├── fr062.cpp
+│   │   ├── fr062.hpp
+│   │   ├── fr062_ops.ops
+│   │   ├── fr063_chaos.cpp
+│   │   ├── fr063_chaos.hpp
+│   │   ├── fr063_chaos_ops.ops
+│   │   ├── fr063_mandelbulb.cpp
+│   │   ├── fr063_mandelbulb.hpp
+│   │   ├── fr063_mandelbulb_ops.ops
+│   │   ├── fr063_mandelbulb_shader.asc
+│   │   ├── fr063_sph.cpp
+│   │   ├── fr063_sph.hpp
+│   │   ├── fr063_sph_ops.ops
+│   │   ├── fr063_tron.cpp
+│   │   ├── fr063_tron.hpp
+│   │   ├── fr063_tron_ops.ops
+│   │   ├── fr063_tron_shader.asc
+│   │   ├── fr067.cpp
+│   │   ├── fr067.hpp
+│   │   ├── fr067_ops.ops
+│   │   ├── fr067_shader.asc
+│   │   ├── fxparticle.cpp
+│   │   ├── fxparticle.hpp
+│   │   ├── fxparticle_mc.cpp
+│   │   ├── fxparticle_mc.hpp
+│   │   ├── fxparticle_ops.ops
+│   │   ├── fxparticle_shader.asc
+│   │   ├── genvector.cpp
+│   │   ├── genvector.hpp
+│   │   ├── packfile.cpp
+│   │   ├── packfile.hpp
+│   │   ├── packfilegen.cpp
+│   │   ├── packfilegen.hpp
+│   │   ├── pdf.cpp
+│   │   ├── pdf.hpp
+│   │   ├── pdf_ops.ops
+│   │   ├── screens4_ops.ops
+│   │   ├── screens4fx.cpp
+│   │   ├── screens4fx.hpp
+│   │   ├── tADF.cpp
+│   │   ├── tADF.hpp
+│   │   ├── tron.cpp
+│   │   ├── tron.hpp
+│   │   ├── tron_ops.ops
+│   │   ├── tron_shader.asc
+│   │   ├── wz3_bitmap_code.cpp
+│   │   ├── wz3_bitmap_code.hpp
+│   │   ├── wz3_bitmap_ops.ops
+│   │   ├── wz4_anim.cpp
+│   │   ├── wz4_anim.hpp
+│   │   ├── wz4_anim_ops.ops
+│   │   ├── wz4_audio.cpp
+│   │   ├── wz4_audio.hpp
+│   │   ├── wz4_audio_ops.ops
+│   │   ├── wz4_bsp.cpp
+│   │   ├── wz4_bsp.hpp
+│   │   ├── wz4_bsp_ops.ops
+│   │   ├── wz4_cubemap.cpp
+│   │   ├── wz4_cubemap.hpp
+│   │   ├── wz4_cubemap_ops.ops
+│   │   ├── wz4_demo2.cpp
+│   │   ├── wz4_demo2.hpp
+│   │   ├── wz4_demo2_ops.ops
+│   │   ├── wz4_demo2nodes.cpp
+│   │   ├── wz4_demo2nodes.hpp
+│   │   ├── wz4_gui.cpp
+│   │   ├── wz4_gui.hpp
+│   │   ├── wz4_ipp.cpp
+│   │   ├── wz4_ipp.hpp
+│   │   ├── wz4_ipp_ops.ops
+│   │   ├── wz4_ipp_shader.asc
+│   │   ├── wz4_mesh.cpp
+│   │   ├── wz4_mesh.hpp
+│   │   ├── wz4_mesh_lwo.cpp
+│   │   ├── wz4_mesh_obj.cpp
+│   │   ├── wz4_mesh_ops.ops
+│   │   ├── wz4_mesh_xsi.cpp
+│   │   ├── wz4_modmtrl.cpp
+│   │   ├── wz4_modmtrl.hpp
+│   │   ├── wz4_modmtrl_ops.ops
+│   │   ├── wz4_modmtrlmod.cpp
+│   │   ├── wz4_modmtrlmod.hpp
+│   │   ├── wz4_modmtrlmod_ops.ops
+│   │   ├── wz4_modmtrlsc.cpp
+│   │   ├── wz4_modmtrlsc.hpp
+│   │   ├── wz4_mtrl.cpp
+│   │   ├── wz4_mtrl.hpp
+│   │   ├── wz4_mtrl2.cpp
+│   │   ├── wz4_mtrl2.hpp
+│   │   ├── wz4_mtrl2_ops.ops
+│   │   ├── wz4_mtrl2_shader.asc
+│   │   ├── wz4_mtrl_ops.ops
+│   │   ├── wz4_mtrl_shader.asc
+│   │   ├── wz4_physx.cpp
+│   │   ├── wz4_physx.hpp
+│   │   ├── wz4_physx_ops.ops
+│   │   ├── wz4_rovemtrl.cpp
+│   │   ├── wz4_rovemtrl.hpp
+│   │   ├── wz4_rovemtrl_ops.ops
+│   │   ├── wz4_rovemtrl_shader.asc
+│   │   ├── wz4_ssao.cpp
+│   │   ├── wz4_ssao.hpp
+│   │   ├── wz4_ssao_ops.ops
+│   │   ├── wz4_ssao_shader.asc
+│   │   └── wz4frlib.mp.txt
+│   └── wz4player
+│       ├── resources
+│       │   ├── icon.ico
+│       │   ├── share_digg.ico
+│       │   ├── share_facebook.ico
+│       │   ├── share_myspace.ico
+│       │   ├── share_stumbleupon.ico
+│       │   └── share_twitter.ico
+│       ├── icon.rc
+│       ├── main.cpp
+│       ├── selector_win.cpp
+│       ├── selector_win.hpp
+│       ├── touchlibs.cpp
+│       ├── vorbisplayer.cpp
+│       ├── vorbisplayer.hpp
+│       ├── wz4player.manifest
+│       └── wz4player.mp.txt
+├── LICENSE.txt
+├── README.md
+├── build_project.bat
+├── deepseek_python_20260404_0f7dba.py
+└── export_bin.bat

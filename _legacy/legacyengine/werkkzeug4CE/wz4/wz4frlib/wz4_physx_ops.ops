@@ -1,0 +1,1321 @@
+/*+**************************************************************************/
+/***                                                                      ***/
+/***   This file is distributed under a BSD license.                      ***/
+/***   See LICENSE.txt for details.                                       ***/
+/***                                                                      ***/
+/**************************************************************************+*/
+
+header
+{
+#include "wz4lib/basic_ops.hpp"
+}
+code
+{
+#include "wz4frlib/wz4_physx.hpp"
+#include "wz4frlib/wz4_demo2nodes.hpp"
+}
+
+/****************************************************************************/
+/****************************************************************************/
+
+type PhysXTab
+{
+  name = "PhysX";
+  color = 0xFFCCEC82;
+  gui = base3d;
+  flags = render3d;
+
+  columnheader[0] = "system";
+  columnheader[1] = "actor";
+  columnheader[2] = "collider";
+}
+
+/****************************************************************************/
+/****************************************************************************/
+
+type WpxColliderBase
+{
+  name = "WpxColliderBase";
+  gui = base3d;
+  flags = render3d|notab;
+  color = 0xFFCCEC82;
+
+  extern void Show(wObject *obj,wPaintInfo &pi)
+  {
+    sSetTarget(sTargetPara(pi.ClearFirst ? sST_CLEARALL : 0,pi.BackColor,pi.Spec));
+
+    pi.ClearFirst = sFALSE;
+    pi.View->SetTargetCurrent();
+    pi.View->SetZoom(pi.Zoom3D);
+    pi.View->Prepare();
+
+    Paint(obj,pi);
+  }
+
+  extern void Paint(wObject *obj,wPaintInfo &pi)
+  {
+    if(obj && obj->IsType(WpxColliderBaseType))
+    {
+      Wz4MtrlType->PrepareView(*pi.View);
+      sFrustum fr;
+      fr.Init(pi.View->ModelScreen);
+
+      Wz4RenderContext ctx;
+      sTargetSpec spec = pi.Spec;
+      ctx.Init(0, &spec, &pi);
+      sRTMan->ResolutionCheck(this, ctx.ScreenX, ctx.ScreenY);
+      ctx.RenderFlags |= pi.Wireframe ? wRF_RenderWire : wRF_RenderMain;
+      if (pi.CamOverride)
+        ctx.RenderFlags |= wRF_FreeCam;
+      ctx.View = *pi.View;
+      ctx.Frustum = fr;
+      ctx.RenderMode = sRF_TARGET_MAIN;
+
+      sMatrix34 mat;
+      mat.Init();
+
+      WpxColliderBase * wpxcol = (WpxColliderBase *) obj;
+      wpxcol->ClearMatricesR();
+      wpxcol->Transform(mat,0);
+      wpxcol->Render(ctx,mat);
+    }
+  }
+
+}
+
+/****************************************************************************/
+/****************************************************************************/
+
+type WpxCollider : WpxColliderBase
+{
+  name = "WpxCollider";
+  gui = base3d;
+  flags = render3d|notab;
+  color = 0xFFCCEC82;
+}
+
+type WpxColliderAdd : WpxColliderBase
+{
+  name = "WpxColliderAdd";
+  gui = base3d;
+  flags = render3d|notab;
+  color = 0xFFCCEC82;
+}
+
+type WpxColliderTransform : WpxColliderBase
+{
+  name = "WpxColliderTransform";
+  gui = base3d;
+  flags = render3d|notab;
+  color = 0xFFCCEC82;
+}
+
+type WpxColliderMul : WpxColliderBase
+{
+  name = "WpxColliderMul";
+  gui = base3d;
+  flags = render3d|notab;
+  color = 0xFFCCEC82;
+}
+
+/****************************************************************************/
+/****************************************************************************/
+
+operator WpxCollider Collider (?Wz4Mesh)
+{
+  tab = PhysXTab;
+  column = 2;
+  shortcut = 'c';
+
+  parameter
+  {
+    group "Shape";
+    layout flags GeometryType("box|sphere|plane|hullmesh|mesh");
+    if(GeometryType == 0 || GeometryType == 2)
+    {
+      float31 Dimension (0.001..0x10000 step 0.01) = 1;
+    }
+    if(GeometryType == 1)
+    {
+      float Radius (0.001..0x10000 step 0.01) = 1;
+    }
+    group "Transform";
+    float30 Rot (-16..16 step 0.01) = 0;
+    float31 Trans (-0x10000..0x10000 step 0.01) = 0;
+    group "Properties";
+    float Density (0.0001..0x10000 step 0.01) = 1.0;
+    group "PhysX Material";
+    float StaticFriction (0.001..0x10000 step 0.01) = 0.5;
+    float DynamicFriction (0.001..0x10000 step 0.01) = 0.5;
+    float Restitution (-0x10000..0x10000 step 0.01) = 0.5;
+  }
+  code
+  {
+    out->ParaBase = out->Para = *para;
+
+    // if hull or mesh type, in0 is required
+    if((para->GeometryType == 3 || para->GeometryType == 4) && !in0)
+    {
+      cmd->SetError(L"Required input is missing");
+      return 0;
+    }
+
+    // build collider geometry for collider mesh preview
+    if(!out->CreateGeometry(in0))
+    {
+      if(para->GeometryType == 3)
+        cmd->SetError(L"Failed to create hull from mesh, try to change mesh geometry (limited to 256 polygons)");
+      else
+        cmd->SetError(L"Failed to create collider");
+      return 0;
+    }
+  }
+}
+
+/****************************************************************************/
+
+operator WpxColliderAdd ColliderAdd "Add" (*WpxColliderBase)
+{
+  tab = PhysXTab;
+  column = 2;
+  shortcut = 'A';
+
+  parameter
+  {
+  }
+  code
+  {
+    out->ParaBase = out->Para = *para;
+    out->AddCollidersChilds(cmd);
+  }
+}
+
+/****************************************************************************/
+
+operator WpxColliderTransform ColliderTransform "Transform" (WpxColliderBase)
+{
+  tab = PhysXTab;
+  column = 2;
+  shortcut = 'T';
+
+  parameter
+  {
+    if(0) float31 Scale (-1024..1024 step 0.01) = 1;  // for exchange scene
+    float30 Rot (-16..16 step 0.01) = 0;
+    float31 Trans (-0x10000..0x10000 step 0.01) = { 0,0,0 } ;
+  }
+  code
+  {
+    out->ParaBase = out->Para = *para;
+    out->AddCollidersChilds(cmd);
+  }
+}
+
+/****************************************************************************/
+
+operator WpxColliderMul ColliderMul "Multiply" (WpxColliderBase)
+{
+  tab = PhysXTab;
+  column = 2;
+  shortcut = 'M';
+
+  parameter
+  {
+    if(0) int Renderpass(-127..127);    // for exchange scene
+    flags Flags ("-|Center");
+    group "Pre-Transform";
+    if(0) float31 PreScale (-1024..1024 step 0.01) = 1; // for exchange scene
+    float30 PreRot (-16..16 step 0.01) = 0;
+    float31 PreTrans (-0x10000..0x10000 step 0.01) = { 0,0,0 } ;
+    group "Multiply Transform";
+    int Count(1..1024) = 2;
+    if(0) float31 Scale (-1024..1024 step 0.01) = 1;  // for exchange scene
+    float30 Rot (-16..16 step 0.01) = 0;
+    float31 Trans (-0x10000..0x10000 step 0.01) = { 0,0,0 } ;
+  }
+  code
+  {
+    out->ParaBase = out->Para = *para;
+    out->AddCollidersChilds(cmd);
+  }
+}
+
+/****************************************************************************/
+/****************************************************************************/
+
+type WpxActorBase
+{
+  name = "WpxActorBase";
+  gui = base3d;
+  flags = render3d|notab;
+  color = 0xFF9CCC52;
+
+  extern void Show(wObject *obj,wPaintInfo &pi)
+  {
+    sSetTarget(sTargetPara(pi.ClearFirst ? sST_CLEARALL : 0,pi.BackColor,pi.Spec));
+
+    pi.ClearFirst = sFALSE;
+    pi.View->SetTargetCurrent();
+    pi.View->SetZoom(pi.Zoom3D);
+    pi.View->Prepare();
+
+    Paint(obj,pi);
+  }
+
+  extern void Paint(wObject *obj,wPaintInfo &pi)
+  {
+    if(obj && obj->IsType(WpxActorBaseType))
+    {
+      Wz4MtrlType->PrepareView(*pi.View);
+      sFrustum fr;
+      fr.Init(pi.View->ModelScreen);
+
+      Wz4RenderContext ctx;
+      sTargetSpec spec = pi.Spec;
+      ctx.Init(0, &spec, &pi);
+      sRTMan->ResolutionCheck(this, ctx.ScreenX, ctx.ScreenY);
+      ctx.RenderFlags |= pi.Wireframe ? wRF_RenderWire : wRF_RenderMain;
+      if (pi.CamOverride)
+        ctx.RenderFlags |= wRF_FreeCam;
+      ctx.View = *pi.View;
+      ctx.Frustum = fr;
+
+      if( (ctx.RenderFlags&wRF_RenderWire) == 0)
+        ctx.RenderMode = sRF_TARGET_MAIN;
+      else
+        ctx.RenderMode = sRF_TARGET_WIRE;
+
+      sMatrix34 mat;
+      mat.Init();
+
+      WpxActorBase * b = (WpxActorBase *) obj;
+      b->ClearMatricesR();
+      b->Transform(mat,0);
+      b->Render(ctx,mat);
+    }
+  }
+
+}
+
+/****************************************************************************/
+/****************************************************************************/
+
+type WpxRigidBody : WpxActorBase
+{
+  name = "WpxRigidBody";
+  gui = base3d;
+  flags = render3d|notab;
+  color = 0xFF9CCC52;
+}
+
+type WpxRigidBodyAdd : WpxActorBase
+{
+  name = "WpxRigidBodyAdd";
+  gui = base3d;
+  flags = render3d|notab;
+  color = 0xFF9CCC52;
+}
+
+type WpxRigidBodyTransform : WpxActorBase
+{
+  name = "WpxRigidBodyTransform";
+  gui = base3d;
+  flags = render3d|notab;
+  color = 0xFF9CCC52;
+}
+
+type WpxRigidBodyMul : WpxActorBase
+{
+  name = "WpxRigidBodyMul";
+  gui = base3d;
+  flags = render3d|notab;
+  color = 0xFF9CCC52;
+}
+
+type WpxRigidBodyDebris : WpxActorBase
+{
+  name = "WpxRigidBodyDebris";
+  gui = base3d;
+  flags = render3d|notab;
+  color = 0xFF9CCC52;
+}
+
+/****************************************************************************/
+/****************************************************************************/
+
+operator WpxRigidBody RigidBody (Wz4Render, WpxColliderBase, ?Wz4Mesh)
+{
+  tab = PhysXTab;
+  column = 1;
+  shortcut = 'r';
+
+  parameter
+  {
+    int Renderpass(-127..127);
+
+    group "Transform";
+    //anim float31 Scale (-0x10000..0x10000 step 0.01) = 1;
+    anim float30 Rot (-16..16 step 0.01) = 0;
+    anim float31 Trans (-0x10000..0x10000 step 0.01) = 0;
+
+    group "Build options";
+    layout flags BuildMode("standard|fromVertex|fromChunks") = 0;
+    if(BuildMode==1)
+    {
+      flags Selection("all|none|selected|unselected");
+    }
+
+    group "Physx actor type";
+    layout flags ActorType("static|dynamic|kinematic") = 0;
+
+    if(ActorType == 1)
+    {
+      group "Mass And Inertia";
+      layout flags MassAndInertia("colliders densities|-") = 0;
+      if(MassAndInertia == 1)
+      {
+        float31 CenterOfMass (-0x10000..0x10000 step 0.01) = 0;
+        float Mass(0.001..0x10000 step 0.01) = 1.0;
+      }
+
+      group "Initial Velocity";
+      float31 LinearVelocity (-0x10000..0x10000 step 0.01) = 0;
+      float31 AngularVelocity (-0x10000..0x10000 step 0.01) = 0;
+      float MaxAngularVelocity (0..0x10000 step 0.01) = 7;
+
+      group "Forces";
+      float SleepThreshold (0..0x10000 step 0.01) = 0.05;
+      anim layout flags Sleep ("no|yes") = 0;
+      anim layout flags Gravity("off|on") = 1;
+      anim float LinearDamping (0..0x10000 step 0.001) = 0.0;
+      anim float AngularDamping (0..0x10000 step 0.001) = 0.05;
+
+      anim layout flags ForceMode "Force" ("simple|impulse|velocity|acceleration|-") = 4;
+      if(ForceMode != 4)
+        anim nolabel float31 Force (-0x10000..0x10000 step 0.001) = 0;
+
+      anim layout flags TorqueMode "Torque" ("simple|impulse|velocity|acceleration|-") = 4;
+      if(TorqueMode != 4)
+        anim nolabel float31 Torque (-0x10000..0x10000 step 0.001) = 0;
+
+      layout flags TimeFlag("once|loop") = 0;
+    }
+
+    if(ActorType==2)
+    {
+      group "Animation Script";
+      overbox overlabel linenumber lines 5 string Script;
+    }
+
+    group "Identity";
+    string ActorName "RigidBodyName";
+
+    group "Attachment points for joints";
+    array
+    {
+      float30 Rot (-16..16 step 0.01) = 0;
+      float31 Trans (-0x10000..0x10000 step 0.01) = { 0,0,0 };
+    }
+  }
+  code
+  {
+    WpxRigidBodyNodeBase * node = 0;
+    if(para->ActorType == 0)
+      node = new WpxRigidBodyNodeStatic();
+    if(para->ActorType == 1)
+      node = new WpxRigidBodyNodeDynamic();
+    if(para->ActorType == 2)
+      node = new WpxRigidBodyNodeKinematic();
+
+    if(node==0)
+    {
+      cmd->SetError(L"Fatal error (unknown actor type)...");
+      return 0;
+    }
+
+    node->ParaBase = out->ParaBase = out->Para = *para;
+
+    node->Init();
+
+    // add colliders
+    out->AddRootCollider(in1);
+
+    // build mode from vertex, add mesh to build rb from its vertices
+    if(para->BuildMode == 1)
+    {
+      if(in2)
+        out->GetPositionsFromMeshVertices(in2, para->Selection);
+      else
+      {
+        cmd->SetError(L"Missing mesh (input 3) to build rigidbodies from vertices.");
+        return 0;
+      }
+    }
+
+     // build mode from chunks, add mesh to build rb from its chunks
+    if(para->BuildMode == 2)
+    {
+      if(in2)
+        out->GetPositionsFromMeshChunks(in2);
+      else
+      {
+        cmd->SetError(L"Missing mesh (input 3) to build rigidbodies from chunks.");
+        return 0;
+      }
+    }
+
+    // joints
+    out->BuildAttachmentPoints((WpxRigidBodyArrayRigidBody *) cmd->Array, cmd->ArrayCount);
+    sCopyString(out->Name, cmd->Strings[1], 255);
+
+    out->RootNode = node;
+    out->AddChilds(cmd, para->Renderpass, 0, 1);
+  }
+  handles
+  {
+    // paint cross Center of mass
+    if(para->MassAndInertia == 1)
+    {
+      sMatrix34 mat;
+      sSRT srt;
+      srt.Translate = para->Trans;
+      srt.Rotate = para->Rot;
+      srt.MakeMatrix(mat);
+
+      sVector31 v[6],p;
+      bool zoff = true;
+      sF32 s = 0.2f;
+      sVector31 o = para->CenterOfMass;
+
+      // cross
+      p.Init(o.x-s, o.y,   o.z);    v[0] = p*mat;
+      p.Init(o.x+s, o.y,   o.z);    v[1] = p*mat;
+      p.Init(o.x,   o.y-s, o.z);    v[2] = p*mat;
+      p.Init(o.x,   o.y+s, o.z);    v[3] = p*mat;
+      p.Init(o.x,   o.y,   o.z-s);  v[4] = p*mat;
+      p.Init(o.x,   o.y,   o.z+s);  v[5] = p*mat;
+      pi.Line3D(v[0],v[1],0,zoff);
+      pi.Line3D(v[2],v[3],0,zoff);
+      pi.Line3D(v[4],v[5],0,zoff);
+    }
+  }
+}
+
+/****************************************************************************/
+
+operator WpxRigidBodyDebris RigidBodyDebris "Debris" (Wz4Render)
+{
+  tab = PhysXTab;
+  column = 1;
+  shortcut = 'd';
+
+  parameter
+  {
+    int Renderpass(-127..127);
+    anim int EnvNum(0..15) = 0;
+
+    group "Transform";
+    //anim float31 Scale (-0x10000..0x10000 step 0.01) = 1;
+    anim float30 Rot (-16..16 step 0.01) = 0;
+    anim float31 Trans (-0x10000..0x10000 step 0.01) = 0;
+
+    group "Collider Properties";
+    float Density (0.0001..0x10000 step 0.01) = 1.0;
+
+    group "PhysX Material";
+    float StaticFriction (0.001..0x10000 step 0.01) = 0.5;
+    float DynamicFriction (0.001..0x10000 step 0.01) = 0.5;
+    float Restitution (-0x10000..0x10000 step 0.01) = 0.5;
+
+    group "Actor type";
+    layout flags ActorType("static|dynamic") = 0;
+
+    if(ActorType == 1)
+    {
+      group "Mass And Inertia";
+      layout flags MassAndInertia("colliders densities|-") = 0;
+      if(MassAndInertia == 1)
+      {
+        float31 CenterOfMass (-0x10000..0x10000 step 0.01) = 0;
+        float Mass(0.001..0x10000 step 0.01) = 1.0;
+      }
+
+      group "Initial Velocity";
+      float31 LinearVelocity (-0x10000..0x10000 step 0.01) = 0;
+      float31 AngularVelocity (-0x10000..0x10000 step 0.01) = 0;
+      float MaxAngularVelocity (0..0x10000 step 0.01) = 7;
+
+      group "Forces";
+      float SleepThreshold (0..0x10000 step 0.01) = 0.05;
+      anim layout flags Sleep ("no|yes") = 0;
+      anim layout flags Gravity("off|on") = 1;
+      anim float LinearDamping (0..0x10000 step 0.001) = 0.0;
+      anim float AngularDamping (0..0x10000 step 0.001) = 0.05;
+
+      anim layout flags ForceMode "Force" ("simple|impulse|velocity|acceleration|-") = 4;
+      if(ForceMode != 4)
+        anim nolabel float31 Force (-0x10000..0x10000 step 0.001) = 0;
+
+      anim layout flags TorqueMode "Torque" ("simple|impulse|velocity|acceleration|-") = 4;
+      if(TorqueMode != 4)
+        anim nolabel float31 Torque (-0x10000..0x10000 step 0.001) = 0;
+
+      layout flags TimeFlag("once|loop") = 0;
+    }
+
+    group "Animation Script"; overbox overlabel linenumber lines 5 string Script;
+  }
+  code
+  {
+    WpxRigidBodyNodeDebris * node = new WpxRigidBodyNodeDebris();
+    node->ParaBase = out->ParaBase = out->Para = *para;
+
+    sInt errcode = out->GetChunkedMesh(in0);
+    if(errcode == 1)
+    {
+      cmd->SetError(L"Need a mesh as input...");
+      return 0;
+    }
+    else if(errcode == 2)
+    {
+      cmd->SetError(L"Mesh is not chunked...");
+      return 0;
+    }
+
+    node->ChunkedMeshPtr = out->ChunkedMesh;
+
+    out->RootNode = node;
+    out->AddChilds(cmd, para->Renderpass);
+  }
+}
+
+/****************************************************************************/
+
+operator WpxRigidBodyAdd RigidBodyAdd "Add" (*WpxActorBase)
+{
+  tab = PhysXTab;
+  column = 1;
+  shortcut = 'a';
+
+  parameter
+  {
+    int Renderpass(-127..127);
+  }
+  code
+  {
+    WpxRigidBodyNodeBase * node = new WpxRigidBodyNodeBase();
+    out->ParaBase = out->Para = *para;
+
+    out->AddActorsChilds(cmd);
+
+    out->RootNode = node;
+    out->AddChilds(cmd, para->Renderpass);
+  }
+}
+
+/****************************************************************************/
+
+operator WpxRigidBodyTransform RigidBodyTransform "Transform" (WpxActorBase)
+{
+  tab = PhysXTab;
+  column = 1;
+  shortcut = 't';
+
+  parameter
+  {
+    int Renderpass(-127..127);
+    //float31 Scale (-1024..1024 step 0.01) = 1;
+    float30 Rot (-16..16 step 0.01) = 0;
+    float31 Trans (-0x10000..0x10000 step 0.01) = { 0,0,0 } ;
+  }
+  code
+  {
+    WpxRigidBodyNodeBase * node = new WpxRigidBodyNodeBase();
+    out->ParaBase = out->Para = *para;
+
+    out->AddActorsChilds(cmd);
+
+    out->RootNode = node;
+    out->AddChilds(cmd, para->Renderpass);
+  }
+}
+
+/****************************************************************************/
+
+operator WpxRigidBodyMul RigidBodyMul "Multiply" (WpxActorBase)
+{
+  tab = PhysXTab;
+  column = 1;
+  shortcut = 'm';
+
+  parameter
+  {
+    int Renderpass(-127..127);
+    flags Flags ("-|Center");
+    group "Pre-Transform";
+    //float31 PreScale (-1024..1024 step 0.01) = 1;
+    float30 PreRot (-16..16 step 0.01) = 0;
+    float31 PreTrans (-0x10000..0x10000 step 0.01) = { 0,0,0 } ;
+    group "Multiply Transform";
+    int Count(1..1024) = 2;
+    //float31 Scale (-1024..1024 step 0.01) = 1;
+    float30 Rot (-16..16 step 0.01) = 0;
+    float31 Trans (-0x10000..0x10000 step 0.01) = { 0,0,0 } ;
+  }
+  code
+  {
+    WpxRigidBodyNodeBase * node = new WpxRigidBodyNodeBase();
+    out->ParaBase = out->Para = *para;
+
+    out->AddActorsChilds(cmd);
+
+    out->RootNode = node;
+    out->AddChilds(cmd, para->Renderpass);
+  }
+}
+
+/****************************************************************************/
+/****************************************************************************/
+
+operator Wz4Render Physx (?PhysxObject,*WpxActorBase)
+{
+  tab = PhysXTab;
+  column = 0;
+  shortcut = 'x';
+
+  parameter
+  {
+    action Restart(1);
+    int Renderpass(-127..127);
+    int NumThreads (0..16) = 1;
+    anim flags Enable ("-|Enable") = 1;
+    float31 Gravity (-0x10000..0x10000 step 0.001) = { 0.0, -9.8, 0.0 };
+
+    group "Scene flags";
+    //layout flags Desc ("-|eENABLE_PCM:*2-|eENABLE_CCD:*4-|eDISABLE_CCD_RESWEEP");
+    layout flags Desc ("-|eENABLE_PCM:*2-|eENABLE_CCD:*3-|eDISABLE_CCD_RESWEEP:*4-|eADAPTIVE_FORCE:*5-|eENABLE_STABILIZATION:*6-|eENABLE_AVERAGE_POINT");
+    layout flags ParticlesSimMode ("cpu|gpu") = 0;
+
+    group "Simulation loop";
+    anim int TimeStep (10..10000) = 60;
+    layout flags WaitFetchResults ("no|yes") = 1;
+    layout flags TimeSync ("-|yes") = 1;
+    if(TimeSync==1)
+    {
+      layout flags SyncMethod ("method1|method2") = 0;
+      anim float DeltaLimit (-1000..1000 step 0.001) = 0.03;
+      anim float DeltaScale (-1000..1000 step 0.001) = 0.001;
+    }
+
+
+    group "Pre-Simulation";
+    layout flags PreDelay ("-|enabled") = 0;
+    if(PreDelay == 1)
+      int PreDelayCycles (0..0x100000 step 10) = 20;
+    layout flags PreSimulation ("-|enabled") = 0;
+    if(PreSimulation == 1)
+      int SimulationCycles (0..0x100000 step 10) = 20;
+
+    group "Physx target";
+    link PhysxTarget:0;
+
+    group "Animation Script"; overbox overlabel linenumber lines 5 string Script;
+  }
+  actions
+  {
+    if(code==1)
+      return 1;
+    else
+      return 0;
+  }
+  code
+  {
+    RNPhysx *node = new RNPhysx();
+    node->ParaBase = node->Para = *para;
+
+    if(!node->Init(cmd))
+    {
+      cmd->SetError(L"Failed to init physx scene");
+      return 0;
+    }
+
+    // init scene target if exists
+    if(in0)
+    {
+      PhysxTarget * target = static_cast<PhysxTarget*>(in0);
+      if(target)
+        node->InitSceneTarget(target);
+      else
+      {
+        cmd->SetError(L"Failed to init scene target");
+        return 0;
+      }
+    }
+
+    out->RootNode = node;
+    out->AddChilds(cmd, para->Renderpass,1);
+  }
+}
+
+/****************************************************************************/
+/****************************************************************************/
+
+type WpxRigidBodyJoint : WpxActorBase
+{
+  name = "WpxRigidBodyJointsSpherical";
+  gui = base3d;
+  flags = render3d|notab;
+  color = 0xFF9CCC52;
+}
+
+type WpxRigidBodyJointsChained : WpxActorBase
+{
+  name = "WpxRigidBodyJointsChained";
+  gui = base3d;
+  flags = render3d|notab;
+  color = 0xFF9CCC52;
+}
+
+/****************************************************************************/
+
+operator WpxRigidBodyJoint Joint "Joint" (WpxActorBase, ?WpxActorBase)
+{
+  tab = PhysXTab;
+  column = 1;
+  shortcut = 'j';
+
+  parameter
+  {
+    group "Input Left";
+    string RigidBodyNameA "RigidBodyName";
+    layout flags RigidBodyA "Instance" ("veryfirst|eachlast|all|specified|range|eachfirst");
+    if(RigidBodyA==3 || RigidBodyA==4)
+      int IdA "Identifier" (0..0x100000 step 1) = 0;
+    if(RigidBodyA==4)
+    {
+      int CountA "Count" (0..0x100000 step 1) = 1;
+      int StepA "Step" (0..0x100000 step 1) = 1;
+    }
+    int AttachmentPointA "AttachmentPoint" (0..0x100000 step 1) = 0;
+
+    group "Input Right";
+    string RigidBodyNameB "RigidBodyName";
+    layout flags RigidBodyB "Instance" ("veryfirst|eachlast|all|specified|range|eachfirst");
+    if(RigidBodyB==3 || RigidBodyB==4)
+      int IdB "Identifier" (0..0x100000 step 1) = 0;
+    if(RigidBodyB==4)
+    {
+      int CountB "Count" (0..0x100000 step 1) = 1;
+      int StepB "Step" (0..0x100000 step 1) = 1;
+    }
+    int AttachmentPointB "AttachmentPoint" (0..0x100000 step 1) = 0;
+
+    group "Joint settings";
+    layout flags JointType ("fixed|spherical|revolute|prismatic|distance") = 1;
+
+
+    if(JointType==0)
+    {
+      layout flags FixedSettings ("default|advanced") = 0;
+      if(FixedSettings)
+      {
+        layout flags FixedProjectionFlag "ProjectionFlag" ("-|enabled") = 0;
+        if(FixedProjectionFlag)
+        {
+          float FixedProjectionLinearTolerance "LinearTolerance" (0..0x1000000 step 1) = 1;
+          float FixedProjectionAngularTolerance "AngularTolerance" (0..180 step 1) = 160;
+        }
+      }
+    }
+
+    if(JointType==1)
+    {
+      layout flags SphericalSettings ("default|advanced") = 0;
+      if(SphericalSettings)
+      {
+        layout flags LimitConeFlag ("-|enabled") = 0;
+        if(LimitConeFlag)
+        {
+          float SphericalLimitConeAngleY "LimitConeAngleY" (0..180 step 1) = 90;
+          float SphericalLimitConeAngleZ "LimitConeAngleZ" (0..180 step 1) = 90;
+          float SphericalLimitConeSpringStiffness "Stiffness" (0..0x1000000 step 1) = 1;
+          float SphericalLimitConeSpringDamping "Damping" (0..0x1000000 step 1) = 0;
+          float SphericalLimitBounceThreshold "BounceThreshold" (0..0x1000000 step 1) = 0.1;
+          float SphericalLimitContactDistance "ContactDistance" (0..0x1000000 step 0.1) = 1;
+          float SphericalLimitRestitution "Restitution" (0..1 step 0.01) = 0;
+        }
+        layout flags SphericalProjectionFlag "ProjectionFlag" ("-|enabled") = 0;
+        if(SphericalProjectionFlag)
+        {
+          float SphericalProjectionLinearTolerance "LinearTolerance" (0..0x1000000 step 1) = 0.1;
+        }
+      }
+    }
+
+    if(JointType==2)
+    {
+      layout flags RevoluteSettings ("default|advanced") = 0;
+      if(RevoluteSettings)
+      {
+        layout flags RevoluteLimitFlag ("-|enabled") = 0;
+        if(RevoluteLimitFlag)
+        {
+          float RevoluteUpperLimit "UpperLimit" (-360..360 step 0.01) = 0;
+          float RevoluteLowerLimit "LowerLimit" (-360..360 step 0.01) = 0;
+          float RevoluteLimitContactDistance "LimitContactDistance" (0..0x1000000 step 1) = 1;
+          float RevoluteLimitDamping "Damping" (0..0x1000000 step 0.1) = 0;
+          float RevoluteLimitRestitution "Restitution" (0..1 step 0.01) = 0;
+          float RevoluteLimitSpring "Spring" (0..0x1000000 step 1) = 0;
+        }
+        layout flags RevoluteDriveEnabled "Drive" ("-|enabled") = 0;
+        layout flags RevoluteFreeSpinEnabled "FreeSpin" ("-|enabled") = 0;
+        float DriveForceLimit (0..0x100000 step 0.01) = 10000;
+        float DriveGearRatio (0..0x100000 step 0.01) = 1;
+        float DriveVelocity (-0x100000..0x100000 step 0.01) = 0;
+
+        layout flags RevoluteProjectionFlag "ProjectionFlag" ("-|enabled") = 0;
+        if(RevoluteProjectionFlag)
+        {
+          float RevoluteProjectionLinearTolerance "LinearTolerance" (0..0x1000000 step 1) = 1;
+          float RevoluteProjectionAngularTolerance "AngularTolerance" (0..180 step 1) = 160;
+        }
+      }
+    }
+
+    if(JointType==3)
+    {
+      layout flags PrismaticSettings ("default|advanced") = 0;
+      if(PrismaticSettings)
+      {
+        layout flags LimitPrismaticFlag ("-|enabled") = 0;
+        if(LimitPrismaticFlag)
+        {
+          float PrismaticUpperLimit "UpperLimit" (-0x1000000..0x1000000 step 0.01) = 5;
+          float PrismaticLowerLimit "LowerLimit" (-0x1000000..0x1000000 step 0.01) = -5;
+          float PrismaticLimitSpringStiffness "SpringStiffness" (0..0x1000000 step 1) = 1;
+          float PrismaticLimitSpringDamping "SpringDamping" (0..0x1000000 step 1) = 0;
+          float PrismaticLimitDamping "Damping" (0..0x1000000 step 0.1) = 0;
+          float PrismaticLimitRestitution "Restitution" (0..1 step 0.01) = 0;
+          float PrismaticLimitSpring "Spring" (0..0x1000000 step 1) = 0;
+        }
+        layout flags PrismaticProjectionFlag "ProjectionFlag" ("-|enabled") = 0;
+        if(PrismaticProjectionFlag)
+        {
+          float PrismaticProjectionLinearTolerance "LinearTolerance" (0..0x1000000 step 1) = 1;
+          float PrismaticProjectionAngularTolerance "AngularTolerance" (0..180 step 1) = 160;
+        }
+      }
+    }
+
+    if(JointType==4)
+    {
+      layout flags DistanceSettings ("default|advanced") = 0;
+      if(DistanceSettings)
+      {
+        layout flags MaxDistanceEnable ("-|enabled") = 0;
+        if(MaxDistanceEnable)
+        {
+          float DistanceMax (0..0x1000000 step 0.1) = 0;
+        }
+        layout flags MinDistanceEnable ("-|enabled") = 0;
+        if(MinDistanceEnable)
+        {
+          float DistanceMin (0..0x1000000 step 0.1) = 0;
+        }
+        layout flags SpringEnable ("-|enabled") = 0;
+        if(SpringEnable)
+        {
+          float SpringStiffness (0..0x1000000 step 0.1) = 10;
+          float SpringDamping (0..0x1000000 step 0.1) = 1;
+        }
+        layout flags DistanceProjectionFlag "ProjectionFlag" ("-|enabled") = 0;
+        if(DistanceProjectionFlag)
+        {
+          float DistanceTolerance (0..0x1000000 step 0.1) = 0;
+        }
+
+      }
+    }
+
+    group "Break settings";
+    layout flags Breakable ("-|on") = 0;
+    if(Breakable)
+    {
+      float BreakForceMax (0..0x1000000 step 100) = 50000;
+      float BreakTorqueMax (0..0x1000000 step 100) = 50000;
+    }
+
+    group "Options";
+    layout flags CollideJoint ("-|on") = 0;
+  }
+  code
+  {
+    WpxRigidBodyNodeBase * node = new WpxRigidBodyNodeBase();
+    out->ParaBase = out->Para = *para;
+
+    out->AddActorsChilds(cmd);
+
+    sCopyString(out->NameA, cmd->Strings[0], 255);
+    sCopyString(out->NameB, cmd->Strings[1], 255);
+
+    out->RootNode = node;
+    cmd->Strings[0] = 0;  // we don't want code
+    out->AddChilds(cmd, 0);
+  }
+}
+
+/****************************************************************************/
+
+operator WpxRigidBodyJointsChained JointsChained "Chain" (WpxActorBase)
+{
+  tab = PhysXTab;
+  column = 1;
+
+  parameter
+  {
+    string RigidBodyNameA "RigidBodyName";
+    int AttachmentPointA "AttachmentPointA" (0..0x100000 step 1) = 1;
+    int AttachmentPointB "AttachmentPointB" (0..0x100000 step 1) = 0;
+
+    group "Joint settings";
+    layout flags JointType ("fixed|spherical|revolute|prismatic|distance") = 1;
+
+    if(JointType==0)
+    {
+      layout flags FixedSettings ("default|advanced") = 0;
+      if(FixedSettings)
+      {
+        layout flags FixedProjectionFlag "ProjectionFlag" ("-|enabled") = 0;
+        if(FixedProjectionFlag)
+        {
+          float FixedProjectionLinearTolerance "LinearTolerance" (0..0x1000000 step 1) = 1;
+          float FixedProjectionAngularTolerance "AngularTolerance" (0..180 step 1) = 160;
+        }
+      }
+    }
+
+    if(JointType==1)
+    {
+      layout flags SphericalSettings ("default|advanced") = 0;
+      if(SphericalSettings)
+      {
+        layout flags LimitConeFlag ("-|enabled") = 0;
+        if(LimitConeFlag)
+        {
+          float SphericalLimitConeAngleY "LimitConeAngleY" (0..180 step 1) = 90;
+          float SphericalLimitConeAngleZ "LimitConeAngleZ" (0..180 step 1) = 90;
+          float SphericalLimitConeSpringStiffness "Stiffness" (0..0x1000000 step 1) = 1;
+          float SphericalLimitConeSpringDamping "Damping" (0..0x1000000 step 1) = 0;
+          float SphericalLimitBounceThreshold "BounceThreshold" (0..0x1000000 step 1) = 0.1;
+          float SphericalLimitContactDistance "ContactDistance" (0..0x1000000 step 0.1) = 1;
+          float SphericalLimitRestitution "Restitution" (0..1 step 0.01) = 0;
+        }
+        layout flags SphericalProjectionFlag "ProjectionFlag" ("-|enabled") = 0;
+        if(SphericalProjectionFlag)
+        {
+          float SphericalProjectionLinearTolerance "LinearTolerance" (0..0x1000000 step 1) = 0.1;
+        }
+      }
+    }
+
+    if(JointType==2)
+    {
+      layout flags RevoluteSettings ("default|advanced") = 0;
+      if(RevoluteSettings)
+      {
+        layout flags RevoluteLimitFlag ("-|enabled") = 0;
+        if(RevoluteLimitFlag)
+        {
+          float RevoluteUpperLimit "UpperLimit" (-360..360 step 0.01) = 0;
+          float RevoluteLowerLimit "LowerLimit" (-360..360 step 0.01) = 0;
+          float RevoluteLimitContactDistance "LimitContactDistance" (0..0x1000000 step 1) = 1;
+          float RevoluteLimitDamping "Damping" (0..0x1000000 step 0.1) = 0;
+          float RevoluteLimitRestitution "Restitution" (0..1 step 0.01) = 0;
+          float RevoluteLimitSpring "Spring" (0..0x1000000 step 1) = 0;
+        }
+        layout flags RevoluteDriveEnabled "Drive" ("-|enabled") = 0;
+        layout flags RevoluteFreeSpinEnabled "FreeSpin" ("-|enabled") = 0;
+        float DriveForceLimit (0..0x100000 step 0.01) = 10000;
+        float DriveGearRatio (0..0x100000 step 0.01) = 1;
+        float DriveVelocity (-0x100000..0x100000 step 0.01) = 0;
+
+        layout flags RevoluteProjectionFlag "ProjectionFlag" ("-|enabled") = 0;
+        if(RevoluteProjectionFlag)
+        {
+          float RevoluteProjectionLinearTolerance "LinearTolerance" (0..0x1000000 step 1) = 1;
+          float RevoluteProjectionAngularTolerance "AngularTolerance" (0..180 step 1) = 160;
+        }
+      }
+    }
+
+    if(JointType==3)
+    {
+      layout flags PrismaticSettings ("default|advanced") = 0;
+      if(PrismaticSettings)
+      {
+        layout flags LimitPrismaticFlag ("-|enabled") = 0;
+        if(LimitPrismaticFlag)
+        {
+          float PrismaticUpperLimit "UpperLimit" (-0x1000000..0x1000000 step 0.01) = 5;
+          float PrismaticLowerLimit "LowerLimit" (-0x1000000..0x1000000 step 0.01) = -5;
+          float PrismaticLimitSpringStiffness "SpringStiffness" (0..0x1000000 step 1) = 1;
+          float PrismaticLimitSpringDamping "SpringDamping" (0..0x1000000 step 1) = 0;
+          float PrismaticLimitDamping "Damping" (0..0x1000000 step 0.1) = 0;
+          float PrismaticLimitRestitution "Restitution" (0..1 step 0.01) = 0;
+          float PrismaticLimitSpring "Spring" (0..0x1000000 step 1) = 0;
+        }
+        layout flags PrismaticProjectionFlag "ProjectionFlag" ("-|enabled") = 0;
+        if(PrismaticProjectionFlag)
+        {
+          float PrismaticProjectionLinearTolerance "LinearTolerance" (0..0x1000000 step 1) = 1;
+          float PrismaticProjectionAngularTolerance "AngularTolerance" (0..180 step 1) = 160;
+        }
+      }
+    }
+
+    if(JointType==4)
+    {
+      layout flags DistanceSettings ("default|advanced") = 0;
+      if(DistanceSettings)
+      {
+        layout flags MaxDistanceEnable ("-|enabled") = 0;
+        if(MaxDistanceEnable)
+        {
+          float DistanceMax (0..0x1000000 step 0.1) = 0;
+        }
+        layout flags MinDistanceEnable ("-|enabled") = 0;
+        if(MinDistanceEnable)
+        {
+          float DistanceMin (0..0x1000000 step 0.1) = 0;
+        }
+        layout flags SpringEnable ("-|enabled") = 0;
+        if(SpringEnable)
+        {
+          float SpringStiffness (0..0x1000000 step 0.1) = 100;
+          float SpringDamping (0..0x1000000 step 0.1) = 1;
+        }
+        layout flags DistanceProjectionFlag "ProjectionFlag" ("-|enabled") = 0;
+        if(DistanceProjectionFlag)
+        {
+          float DistanceTolerance (0..0x1000000 step 0.1) = 0;
+        }
+
+      }
+    }
+
+    group "Break settings";
+    layout flags Breakable ("-|on") = 0;
+    if(Breakable)
+    {
+      float BreakForceMax (0..0x1000000 step 100) = 50000;
+      float BreakTorqueMax (0..0x1000000 step 100) = 50000;
+    }
+
+    group "Options";
+    layout flags CollideJoint ("-|on") = 0;
+
+  }
+  code
+  {
+    WpxRigidBodyNodeBase * node = new WpxRigidBodyNodeBase();
+    out->ParaBase = out->Para = *para;
+
+    out->AddActorsChilds(cmd);
+    sCopyString(out->NameA, cmd->Strings[0], 255);
+
+    out->RootNode = node;
+    cmd->Strings[0] = 0;  // we don't want code
+    out->AddChilds(cmd, 0);
+  }
+}
+
+/****************************************************************************/
+/****************************************************************************/
+
+type PhysxObject
+{
+  name = "PhysxObject";
+  flags = notab;
+  color = 0xFF778822;
+  gui = base2d;
+}
+
+operator PhysxObject PhysxTarget ()
+{
+  tab = PhysXTab;
+  column = 0;
+
+  code
+  {
+  }
+}
+
+/****************************************************************************/
+
+operator Wz4Particles PxCloud(PhysxObject)
+{
+  tab = PhysXTab;
+  column = 0;
+  parameter
+  {
+    link PhysxTarget:0;
+
+    int Count(1..65536) = 256;
+    anim float CloudSize[2] (-1024..1024 step 0.01) = 1;
+    anim float CloudFreq[2] (-1024..1024 step 0.01) = { 1,4 };
+    anim float30 CloudPos(-1000000..1000000 step 0.0001) = { 0,0,0 };
+
+    group "Animation Script"; overbox overlabel linenumber lines 5 string Script;
+  }
+
+  code
+  {
+    RPPhysxParticleTest *node = new RPPhysxParticleTest();
+    node->ParaBase = node->Para = *para;
+
+    in0->RegisterParticleNode(node);
+    node->Target = in0;
+    if(!in0->PhysxSceneRef)
+    {
+      cmd->SetError(L"Physx scene reference is empty, check Physx target output...");
+      return 0;
+    }
+
+    node->Init();
+
+    out->RootNode = node;
+    out->AddCode(cmd);
+  }
+}
+
+/****************************************************************************/
+
+operator Wz4Particles PxPart(PhysxObject, Wz4Particles)
+{
+  tab = PhysXTab;
+  column = 0;
+  parameter
+  {
+    link PhysxTarget:0;
+
+    int Count(1..65536) = 256;
+    anim float CloudSize[2] (-1024..1024 step 0.01) = 1;
+    anim float CloudFreq[2] (-1024..1024 step 0.01) = { 1,4 };
+    anim float30 CloudPos(-1000000..1000000 step 0.0001) = { 0,0,0 };
+
+    group "Animation Script"; overbox overlabel linenumber lines 5 string Script;
+  }
+
+  code
+  {
+    RPPxPart *node = new RPPxPart();
+    node->ParaBase = node->Para = *para;
+
+    in0->RegisterParticleNode(node);
+    node->Target = in0;
+    if(!in0->PhysxSceneRef)
+    {
+      cmd->SetError(L"Physx scene reference is empty, check Physx target output...");
+      return 0;
+    }
+
+    
+
+
+    if(in1)
+    {
+      node->Source = in1->RootNode; in1->RootNode->AddRef();
+    }
+
+    node->Init();
+
+    out->RootNode = node;
+    out->AddCode(cmd);
+  }
+}
+
+
+
+/****************************************************************************/
+
+operator Wz4Particles RangeEmiter()
+{
+  tab = PhysXTab;
+  column = 0;
+  parameter
+  {
+    int MaxParticles(1..200000) = 500;
+    group "Particles per second";    
+    layout flags RateDistribution ("constant|range");
+    if(RateDistribution==0)
+    {
+      anim int Rate(0..200000) = 20;
+    }
+    if(RateDistribution==1)
+    {
+      anim int RateRangeMin(0..200000) = 5;
+      anim int RateRangeMax(0..200000) = 40;
+    }
+	anim float PauseCycle(-1000000..1000000 step 0.001) = 0;
+
+     group "Position";
+    layout flags PositionDistribution ("constant|range");
+    if(PositionDistribution==0)
+    {
+      anim float31 Position(-1000000..1000000 step 0.001) = { 0,0,0 };
+    } 
+    if(PositionDistribution==1)
+    {
+      anim float31 PositionRangeMin(-1000000..1000000 step 0.001)  = { -0.25, 0.0, -0.25 };
+      anim float31 PositionRangeMax(-1000000..1000000 step 0.001) = { 0.25, 1.0, 0.25 };
+    }
+
+	group "Velocity";
+    layout flags VelocityDistribution ("constant|range");
+    if(VelocityDistribution==0)
+    {
+      anim float30 Velocity(-1000000..1000000 step 0.001) = { 0,1,0 };
+    }
+    if(VelocityDistribution==1)
+    {
+      anim float30 VelocityRangeMin(-1000000..1000000 step 0.001) = { -0.25, 0.5, -0.25 };
+      anim float30 VelocityRangeMax(-1000000..1000000 step 0.001) = { 0.25, 2.0, 0.25 };
+    }
+
+	group "Acceleration";
+    layout flags AccelerationDistribution ("constant|range");
+    if(AccelerationDistribution==0)
+    {
+      anim float30 Acceleration(-1000000..1000000 step 0.001) = { 0,0,0 };
+    }
+    if(AccelerationDistribution==1)
+    {
+      anim float30 AccelerationRangeMin(-1000000..1000000 step 0.001) = { -0.25, 0.5, -0.25 };
+      anim float30 AccelerationRangeMax(-1000000..1000000 step 0.001) = { 0.25, 2.0, 0.25 };
+    }
+
+    group "Max Life (in seconds)";
+    layout flags MaxLifeDistribution ("constant|range");
+    if(MaxLifeDistribution==0)
+    {
+      anim float MaxLife(-10000..10000 step 0.001) = 1;
+    }    
+    if(MaxLifeDistribution==1)
+    {
+      anim float MaxLifeRangeMin(-10000..10000 step 0.001) = 1;
+      anim float MaxLifeRangeMax(-10000..10000 step 0.001) = 2;
+    }
+
+
+    group "Animation Script"; overbox overlabel linenumber lines 5 string Script;
+  }
+
+  code
+  {
+    RPRangeEmiter *node = new RPRangeEmiter();
+    node->ParaBase = node->Para = *para;
+    node->Init();
+    out->RootNode = node;
+    out->AddCode(cmd);
+  }
+}

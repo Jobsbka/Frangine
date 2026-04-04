@@ -1,0 +1,145 @@
+v1.15
+
+[348a2e1] - 2013-11-24 - RigidBody: update mesh shape size for joints
+[24c81a1] - 2013-11-23 - physx : add PreSimulation and PreDelay simulation
+[a188c1e] - 2013-11-22 - Physx : fix timestep
+[fb2c47b] - 2013-11-20 - Physx: fix timestep
+[37eff65] - 2013-11-19 - Physx : new simulation loop
+[f305df2] - 2013-11-19 - Revert "PhysX: simplify simulation loop"
+[a271680] - 2013-11-18 - PhysX: simplify simulation loop
+[9787631] - 2013-10-27 - Ballistic : add a flag to animated source script
+[181ed38] - 2013-10-26 - Easter_cubetree : update growspeed parameter limit from 10 to 10000
+[b43df07] - 2013-10-26 - Camera : update schleuder mode name to pivot
+[6624678] - 2013-10-26 - SplineEditor : Fix bug with scratching time when spline maxtime is different than 1.0
+[39595d0] - 2013-10-25 - General : add ctrl-u shortcut to uncalc all ops
+[229f1a8] - 2013-10-24 - WaterPlane : new mod material fx, a water like reflective material
+[db41de6] - 2013-10-24 - ModLight : shadows now working correctly with multiple spotlights
+[923d432] - 2013-10-23 - Refract : New mod material FX
+[856b9b0] - 2013-10-20 - SplineEditor : Fix Quantize Time shortcut
+[186fb0c] - 2013-10-19 - ModCLipTwister : add individual clip animation
+[60cc261] - 2013-10-19 - ModCLipTwister : fix incorrect clip rotation
+[cdd4889] - 2013-10-18 - ModClipTwister : is now obsolete, replaced by New one (same name) with clip orientation based on matrix (for handles)
+[f37d681] - 2013-10-18 - update init() in sVertexTangent struct to correctly get tangent vector
+[0739d7e] - 2013-10-18 - FR033_WaterSimRender : add tangent information to render normal map
+[3fe8005] - 2013-10-18 - Const (material) : update color parameter name to colors
+[d33e9a4] - 2013-10-18 - FromMesh (particles) : Add new a random parameter to randomize particles positions
+[67b11cd] - 2013-10-17 - FR033_WaterSimRender : fix flickering bug
+[0d6aecc] - 2013-10-17 - ModMaterial : fix warning code. actions didn't return a value in all cases
+[b815e1e] - 2013-10-17 - FR033_MeteorShowerSim + FR033_WaterSimRender : crashes Fixed
+[c0d2738] - 2013-10-14 - ShaderParam : new operator for ModMaterial. Bind vectors from ModMtrlEnv to customized shader code to allow animated variables
+[b1b7367] - 2013-10-13 -  SphereSlicer : Fix shader error when FromEnv is not enabled
+[029b215] - 2013-10-13 - Tint: update ModMisc references to ModMtrlEnv
+[7c0590b] - 2013-10-13 - Tex2D : update ModMisc references to ModMtrlEnv
+[6d8d18a] - 2013-10-13 - SphereFog : update reference to ModMtrlEnv + fix layout flag that don't display correctly list of vectors
+[c97eaf1] - 2013-10-13 - ModMisc is now obsolete, replaced by ModMtrlEnv. Add channel .w for vectors and .a for colors
+[465598c] - 2013-10-13 - ModMaterial (enhenced) : now shader can be manually edited
+[6e9b3cc] - 2013-10-09 - Cloud2: restore old operator for backward compatibility and set it obsolete, creation of a new cloud2 operator with extra rot.x and rot.z parameters
+[5110b27] - 2013-10-09 - ModMaterial: fix crash when shader return a compil error, only paint mesh in red
+[5e35466] - 2013-10-09 - New Mod FX operator : DisplaceTwist
+[ce79f86] - 2013-10-09 - New Mod FX operator : DisplaceSinWave
+[3560f36] - 2013-10-08 - Const (material operator) : now support alpha channel when source is set to ModMtrlEnv
+[9ffa8bc] - 2013-10-08 - ModMisc : renamed to ModMtrlEnv
+[d7bfec6] - 2013-10-08 - ModLightEnv : is now obsolete, replaced by ModFog
+[8291951] - 2013-10-08 - GUI: fix layout bug that maximize the stack window after some windows manipulations (show desktop)
+[0d45787] - 2013-10-07 - Replace LightEnv to EnvNum
+[5790a0f] - 2013-10-06 - CustomMaterial : add tangent information for vertex shader
+
+v1.1
+
+[f43b4d6] - 2013-09-29 - Release new version 1.1
+[5169104] - 2013-09-29 - Text3D : fix memory leak
+[76d3e90] - 2013-09-28 - Camera: add a new mode (MirrorX). Mirrored view along x axis (maily used with render target to make reflections). Add a new flag UpdateLastView : The last camera will update the camera matrix info (can be used by previous cameras to retrieve the last camera pos and target)
+[24a96be] - 2013-09-27 - SplitAlongPlane: transformation is now done with SRT
+[b5413ec] - 2013-09-26 - Merge branch 'master' of https://github.com/wzman/werkkzeug4CE
+[d4f9b28] - 2013-09-26 - Fix layout bug with handles type choice parameter
+[77efb47] - 2013-09-24 - Const (ModShaderSampler) : rename env0..env7 to color0..color7
+[5a7ce67] - 2013-09-23 - Sparkle: Add a static or dynamic flag
+[1f8c401] - 2013-09-23 - Sparkle: better behavior with delay
+[aa7f822] - 2013-09-22 - Sparcle: update min limit in delay parameter
+[341f4ed] - 2013-09-22 - Sparkle: add delay parameter
+[527c468] - 2013-09-22 - TronPrint: fix crash, need now at least one bitmap on entry
+[e989029] - 2013-09-22 - Path3D: fix translation transform if centered
+[7b20b89] - 2013-09-22 - Path3D : add transformation parameters
+[d6f7b27] - 2013-09-22 - Add tangent info for sGeometry LoadCube
+[e10e1eb] - 2013-09-22 - Add cube and sphere as material primitive for material preview
+[db6122d] - 2013-09-21 - Replace all animated parameter named color to colors to avoid concetanation of the '_' char at name end (color is a reserved keyword)
+[c2f559a] - 2013-09-21 - Remove the no Desktop Window Manager flag. Was set to stops flickering menu. But finally, bad idea
+[c60d817] - 2013-09-20 - Add to sGeometry class, the sphere geometry. Update wPaintInfoclass to use this geometry
+[268f6c7] - 2013-09-20 - Fix flickering menu on vista/seven by automatically disabling Windows Destop Manager at startup
+[866fd7b] - 2013-09-19 - Update CustomMaterial to update mvp matrix
+[d415c5c] - 2013-09-19 - SphObject support for new handles
+[b403205] - 2013-09-19 - New 3D handle : Sphere3D + update operators to use this one
+[0446b45] - 2013-09-19 - SphPlaneCol now use by default Box3D as handle
+[abc4083] - 2013-09-19 - Restaure changes made about new handle shortcuts (bid idea)
+[4299f21] - 2013-09-19 - update SphSimpleCol to use Box3D handle
+[d3c9d32] - 2013-09-19 - change shortcuts for show handles...
+[871cc2b] - 2013-09-19 - Select operator (mesh) now use by default the new handle (Box3D) to display its handles shapes
+[f636bf7] - 2013-09-19 - Add default color handle choice in theme
+[16e955b] - 2013-09-19 - Add color choice for Box3D handle
+[c57d083] - 2013-09-19 - New 3D Handle Box
+[69830e4] - 2013-09-18 - SphSimpleCol : add bounding box helper when displaying handles
+[c21be7c] - 2013-09-17 - New mesh operator : CenterEx (axis choice + on ground option)
+[168f122] - 2013-09-17 - GUI bug fix: save as dialog, overwrite box wasn't display on top when3d view is active
+[c4ce867] - 2013-09-16 - Open backup: now use the filename of the recovered file
+[a3dd548] - 2013-09-16 - Reset music filename and include docs when creating a new file
+[00e48c2] - 2013-09-16 - update default tab size in text windows
+[0a5b429] - 2013-09-16 - CustomMaterial: Add Custom Mtrl env index, to select desired instance of CustomMtrlEnv
+[b6e91af] - 2013-09-16 - GUI fix: open save file dialog if no filename is defined when saving
+[cefea81] - 2013-09-16 - BakedShadow, update parameters labels to remove animated marker
+[e0edaed] - 2013-09-15 - New operator : CustomMtrlEnv, to control and animate variables of customMaterial
+[7f0daba] - 2013-09-15 - Rename LightEnv to ModMisc in SphereFog op parameters
+[0941dd9] - 2013-09-15 - Update CustomMaterial to support model matrix ('yellow' transformations) and time (animated shaders)
+[90ae968] - 2013-09-14 - Increase width of Edit GUI theme window
+[46ce797] - 2013-09-14 - CrashZoom : label correction in step parameter
+[4fe21a8] - 2013-09-13 - Rename LightEnv to ModMisc, in Transform tex2D ModShaderSampler ops
+[2ad8798] - 2013-09-13 - Larger textbox for comments
+[b7cceb6] - 2013-09-13 - Fix SphSDFColl, collisions are now working
+[3014a1c] - 2013-09-13 - RNFR063_Sprites::Prepare : variable od used without initialization
+[39aa742] - 2013-09-13 - Better fix for exploder op, when combined with trails and morphstream
+[dc10d1c] - 2013-09-12 - Fix a display bug with chunks op. When particle used = 0
+[890ff51] - 2013-09-11 - Fix crash with sprites and some particles op, due to a bad initialisation of the Time variable in Wz4Particle struct with NaN values. Added a default constructor with a default init of its variables
+[0675609] - 2013-09-11 - Add possibility to resize vertically all operators
+[0eb0c28] - 2013-09-10 - New shortcuts
+[1a2cd8c] - 2013-09-10 - Fix normal orientation in Trails operator
+[edc0473] - 2013-09-09 - Rename button to bottom in sprites op parameters
+[627578b] - 2013-09-09 - Rename Sparcle operator to Sparkle
+[d35e966] - 2013-09-09 - Fix crash with several materials on a mesh when applying a new material on an already painted selection
+[374a7db] - 2013-09-09 - update README.md
+[4fdb4f3] - 2013-09-09 - Update project default path in build_project script
+[91c231c] - 2013-09-08 - Fix crash wit morphstream particles when source or destination particles use quaternions
+[40e915d] - 2013-09-08 - Fix crash with trails (particles), when source use quaternions
+[c1da31a] - 2013-09-08 - Fix bug with sparcles, Flags at init is now the same that its source. Resolve crash bug due to invalid pointers when source particles use quaternions rotation (exploder for example)
+[15a4c08] - 2013-09-08 - Fix Print operator to use its transfomation parameters
+[38f49e1] - 2013-09-06 - Add license.txt and update README.md
+[1380745] - 2013-09-06 - Remove binaries from repository
+[6c572b1] - 2013-09-05 - Add altona_config.hpp
+[2cb8058] - 2013-09-05 - Add a script to release binaries packages
+[59bacd5] - 2013-09-05 - Add changes.txt to released binaries
+
+v1.0
+
+[3c1f3be] - 2013-09-05 - Release Binaries
+[33fab4d] - 2013-09-05 - Add theme controls to resize operators, Add theme controls for fonts, and fix theme color for clip dialog
+[99571c2] - 2013-09-03 - Add wz4 tutorial
+[ce913c7] - 2013-09-03 - update window title and version in player
+[be4a639] - 2013-09-03 - Change windows title + Version number
+[8cee2b7] - 2013-09-03 - New theme parameters + font size + new default skin
+[88ec521] - 2013-09-02 - Add new mesh operator : FromVertex
+[8530dc6] - 2013-09-02 - update README.md
+[b5f0c5d] - 2013-09-02 - update README.md
+[5115d84] - 2013-09-02 - update README.md
+[bf902db] - 2013-09-02 - update README.md
+[fa3b28a] - 2013-09-02 - Physx fix compiler error if _DEBUG is defined
+[9f29bbb] - 2013-09-02 - update README.md
+[f9621cf] - 2013-09-02 - add console pause to build_project.bat script
+[cf96eae] - 2013-09-02 - add PhysX librarie and support of RigidBody
+[a9b57f4] - 2013-09-02 - add new a particles operator : MorphStream
+[27fef75] - 2013-09-02 - Add to Cloud2 rot x and z axis
+[9d6055c] - 2013-09-02 - Add handles for modlight + individual matrix transformation
+[cf71a47] - 2013-09-02 - Remove useless v2 lib in player to allow x64 build
+[a1840d0] - 2013-09-02 - fix README.md
+[b08d1f4] - 2013-09-02 - update README.md
+[2e6d139] - 2013-09-02 - add altona_config.hpp file
+[4b6820b] - 2013-09-02 - add altona binaries
+[099c296] - 2013-09-02 - Farbrausch Werkkzeug4 initial fork
+[ca1f483] - 2013-09-02 - first commit
