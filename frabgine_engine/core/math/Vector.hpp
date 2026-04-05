@@ -4,6 +4,7 @@
 #include <cmath>
 #include <array>
 #include <type_traits>
+#include <cstddef>
 
 namespace frabgine {
 
@@ -28,7 +29,7 @@ public:
     T* data() { return data_.data(); }
     const T* data() const { return data_.data(); }
     
-    size_t size() const { return N; }
+    constexpr size_t size() const { return N; }
     
     VectorBase operator+(const VectorBase& other) const {
         VectorBase result;
@@ -48,6 +49,10 @@ public:
         return result;
     }
     
+    friend VectorBase operator*(T scalar, const VectorBase& vec) {
+        return vec * scalar;
+    }
+    
     VectorBase operator/(T scalar) const {
         VectorBase result;
         for (size_t i = 0; i < N; ++i) result.data_[i] = data_[i] / scalar;
@@ -64,9 +69,51 @@ public:
         return *this;
     }
     
+    VectorBase& operator*=(T scalar) {
+        for (size_t i = 0; i < N; ++i) data_[i] *= scalar;
+        return *this;
+    }
+    
+    VectorBase& operator/=(T scalar) {
+        for (size_t i = 0; i < N; ++i) data_[i] /= scalar;
+        return *this;
+    }
+    
     bool operator==(const VectorBase& other) const {
         for (size_t i = 0; i < N; ++i) if (data_[i] != other.data_[i]) return false;
         return true;
+    }
+    
+    bool operator!=(const VectorBase& other) const {
+        return !(*this == other);
+    }
+    
+    VectorBase operator-() const {
+        VectorBase result;
+        for (size_t i = 0; i < N; ++i) result.data_[i] = -data_[i];
+        return result;
+    }
+    
+    T lengthSquared() const {
+        T sum = T{};
+        for (size_t i = 0; i < N; ++i) sum += data_[i] * data_[i];
+        return sum;
+    }
+    
+    T length() const {
+        return std::sqrt(lengthSquared());
+    }
+    
+    VectorBase normalize() const {
+        T len = length();
+        if (len > T{}) return *this / len;
+        return *this;
+    }
+    
+    T dot(const VectorBase& other) const {
+        T sum = T{};
+        for (size_t i = 0; i < N; ++i) sum += data_[i] * other.data_[i];
+        return sum;
     }
 };
 
