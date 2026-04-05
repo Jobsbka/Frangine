@@ -10,8 +10,12 @@ find_package(Vulkan REQUIRED)
 
 add_executable(space_rogue
     src/main.cpp
+    src/procgen/perlin.cpp
+    src/procgen/voxel_field.cpp
     src/render/vulkan_context.cpp
     src/render/shader_compiler.cpp
+    src/render/marching_cubes.cpp
+    src/render/mesh.cpp
 )
 
 target_include_directories(space_rogue PRIVATE src)

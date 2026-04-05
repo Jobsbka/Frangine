@@ -2,15 +2,27 @@
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
 #include <vector>
-#include <optional>
+
+// Forward declaration (чтобы не включать mesh.hpp в заголовок)
+class Mesh;
 
 class VulkanContext {
 public:
     bool init(GLFWwindow* window);
     void cleanup();
     void drawFrame();
+
+    // Доступ к device и command pool
+    VkDevice getDevice() const { return device; }
+    VkPhysicalDevice getPhysicalDevice() const { return physicalDevice; }
+    VkCommandPool getCommandPool() const { return commandPool; }
+
+    // Обновить командные буферы для отрисовки меша
+    void updateCommandBuffers(const Mesh& mesh);
+
 private:
     GLFWwindow* window = nullptr;
+
     VkInstance instance;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkDevice device;
@@ -28,9 +40,11 @@ private:
     VkSemaphore imageAvailableSemaphore;
     VkSemaphore renderFinishedSemaphore;
     VkFence inFlightFence;
+
     VkFormat swapchainImageFormat;
     VkExtent2D swapchainExtent;
-    
+
+    // Вспомогательные приватные методы
     void createInstance();
     void createSurface();
     void pickPhysicalDevice();
@@ -41,6 +55,6 @@ private:
     void createGraphicsPipeline();
     void createFramebuffers();
     void createCommandPool();
-    void createCommandBuffers();
+    void createCommandBuffers();   // только аллокация, без записи
     void createSyncObjects();
 };
