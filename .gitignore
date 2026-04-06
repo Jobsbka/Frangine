@@ -1,91 +1,69 @@
-### C++
-# Object files
+```
+# Compiled and build artifacts
 *.o
 *.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Static libraries
-*.a
-*.lib
-
-# Executables
 *.exe
+*.dll
+*.so
+*.a
 *.out
+build/
+dist/
+target/
 
-# Linker output
-*.ilk
-*.map
-*.exp
+# Dependencies
+node_modules/
+venv/
+.venv/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+.gradle/
 
-# Debug files
-*.dSYM/
-*.idb
-*.pdb
+# Logs and temp files
+*.log
+*.tmp
+*.swp
 
-### Windows
-# Windows thumbnail cache files
+# Environment
+.env
+.env.local
+*.env.*
+
+# Editors
+.vscode/
+.idea/
+
+# System files
+.DS_Store
 Thumbs.db
 
-# Folder config file
-[Dd]esktop.ini
+# Coverage
+coverage/
+htmlcov/
+.coverage
 
-# Recycle Bin used on file shares
-$RECYCLE.BIN/
-
-# Windows shortcuts
-*.lnk
-
-### VisualStudio
-# User-specific files
-*.suo
-*.user
-
-# Build results
-[Dd]ebug/
-[Rr]elease/
-x64/
-x86/
-[Ww][Ii][Nn]32/
-[Aa][Rr][Mm]/
-[Aa][Rr][Mm]64/
-[Bb]in/
-[Oo]bj/
-
-# Visual Studio cache/options directory
-.vs/
-
-# MSTest test Results
-[Tt]est[Rr]esult*/
-[Bb]uild[Ll]og.*
-
-# NuGet
-*.nupkg
-**/[Pp]ackages/*
-!**/[Pp]ackages/build/
-*.nuget.props
-*.nuget.targets
-
-# Publish Web Output
-*.[Pp]ublish.xml
-
-### VS Code
-# VSCode settings (keep shared configuration)
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-
-# Local History for Visual Studio Code
-.history/
-
-# Built Visual Studio Code Extensions
-*.vsix
+# Compressed files
+*.zip
+*.gz
+*.tar
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
+*.lz4
+*.lzh
+*.cab
+*.arj
+*.rpm
+*.deb
+*.Z
+*.lz
+*.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
+```
