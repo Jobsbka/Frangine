@@ -22,3 +22,8 @@ space_rogue/
 │       ├── triangle.vert        # вершинный шейдер
 │       └── triangle.frag        # фрагментный шейдер
 └── external/                    # подмодули GLFW, Vulkan SDK (системно)
+
+
+src/tools/
+├── voxel_to_mesh.hpp
+└── voxel_to_mesh.cpp
