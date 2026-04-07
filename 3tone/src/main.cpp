@@ -1,10 +1,15 @@
 #include "core/graph.hpp"
 #include "core/executor.hpp"
+#include "core/baking.hpp"
 #include "nodes/basic_nodes.hpp"
+#include "nodes/checker_texture.hpp"
+#include "nodes/asset_node.hpp"
 #include "types/type_system.hpp"
+#include "assets/asset_manager.hpp"
 #include <iostream>
 #include <exception>
 #include <chrono>
+#include <filesystem>
 
 using namespace arxglue;
 
@@ -13,72 +18,72 @@ int main() {
         initBasicTypes();
         registerBasicNodes();
 
-        // Создаём граф: constInt(5) + constFloat(3.7f) -> Add (ожидает int, float сконвертируется)
+        std::cout << "=== 3Tone Baking Demo ===" << std::endl;
+
+        // Создаём граф: CheckerTexture -> (результат)
         Graph graph;
 
-        auto constInt = std::make_unique<ConstantNode<int>>(5);
-        auto constFloat = std::make_unique<ConstantNode<float>>(3.7f);
-        auto addNode = std::make_unique<AddNode>();
-
-        NodeId idInt = graph.addNode(std::move(constInt));
-        NodeId idFloat = graph.addNode(std::move(constFloat));
-        NodeId idAdd = graph.addNode(std::move(addNode));
-
-        graph.addConnection({idInt, 0, idAdd, 0});
-        graph.addConnection({idFloat, 0, idAdd, 1});
+        auto checker = std::make_unique<CheckerTextureNode>(512, 512, 8, 8);
+        NodeId checkerId = graph.addNode(std::move(checker));
 
         Executor executor(2);
         Context ctx;
 
-        std::cout << "=== First execution (fresh) ===" << std::endl;
-        auto start = std::chrono::high_resolution_clock::now();
-        executor.execute(graph, ctx, {idAdd});
-        auto end = std::chrono::high_resolution_clock::now();
-        int result = std::any_cast<int>(ctx.output);
-        std::cout << "Result: " << result << " (5 + 3.7 -> 5 + 3 = 8? Wait, conversion float->int truncates: 3.7 -> 3, so 5+3=8)" << std::endl;
-        std::cout << "Time: " << std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() << " µs" << std::endl;
+        // Первое выполнение – генерация текстуры
+        std::cout << "Generating checker texture..." << std::endl;
+        executor.execute(graph, ctx, {checkerId});
 
-        std::cout << "\n=== Second execution (cached, no changes) ===" << std::endl;
-        start = std::chrono::high_resolution_clock::now();
-        executor.execute(graph, ctx, {idAdd});
-        end = std::chrono::high_resolution_clock::now();
-        result = std::any_cast<int>(ctx.output);
-        std::cout << "Result: " << result << std::endl;
-        std::cout << "Time: " << std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() << " µs (should be much faster due to caching)" << std::endl;
+        if (!ctx.output.has_value()) {
+            std::cerr << "No output from checker texture!" << std::endl;
+            return 1;
+        }
+        std::cout << "Output type: " << ctx.output.type().name() << std::endl;
+        auto tex = std::any_cast<std::shared_ptr<TextureAsset>>(ctx.output);
+        std::cout << "Generated texture size: " << tex->width << "x" << tex->height << std::endl;
 
-        // Сериализация и десериализация
+        // Запекаем подграф в PNG
+        std::string bakePath = "baked_checker.png";
+        std::cout << "Baking subgraph to " << bakePath << "..." << std::endl;
+        NodeId assetId = bakeSubgraph(graph, checkerId, bakePath, "texture");
+        std::cout << "Baked. New AssetNode ID: " << assetId << std::endl;
+
+        // Выполняем граф снова, теперь через AssetNode
+        Context ctx2;
+        executor.execute(graph, ctx2, {assetId});
+
+        std::cout << "ctx2.output type: " << ctx2.output.type().name() << std::endl;
+        if (ctx2.output.type() == typeid(std::shared_ptr<TextureAsset>)) {
+            auto tex2 = std::any_cast<std::shared_ptr<TextureAsset>>(ctx2.output);
+            std::cout << "AssetNode texture size: " << tex2->width << "x" << tex2->height << std::endl;
+
+            // Сравниваем пиксели (первые несколько)
+            bool match = (tex->width == tex2->width && tex->height == tex2->height);
+            if (match) {
+                for (size_t i = 0; i < std::min(tex->pixels.size(), tex2->pixels.size()); ++i) {
+                    if (tex->pixels[i] != tex2->pixels[i]) {
+                        match = false;
+                        break;
+                    }
+                }
+            }
+            std::cout << "Pixel comparison: " << (match ? "MATCH" : "DIFFER") << std::endl;
+        } else {
+            std::cerr << "Unexpected output type from AssetNode" << std::endl;
+            if (ctx2.output.has_value()) {
+                std::cerr << "Actual type: " << ctx2.output.type().name() << std::endl;
+            } else {
+                std::cerr << "Output is empty!" << std::endl;
+            }
+        }
+
+        // Сериализация графа с запечённым узлом
         nlohmann::json j;
         graph.serialize(j);
-        std::cout << "\nSerialized graph:\n" << j.dump(2) << std::endl;
-
-        Graph graph2;
-        graph2.deserialize(j);
-        Executor executor2(1);
-        Context ctx2;
-        executor2.execute(graph2, ctx2, {graph2.getNodes().back()->getId()});
-        int result2 = std::any_cast<int>(ctx2.output);
-        std::cout << "Deserialized result: " << result2 << std::endl;
-
-        // Дополнительно: тест с PerlinNoise (volatile) – не должен кэшироваться
-        std::cout << "\n=== Volatile node test (PerlinNoise) ===" << std::endl;
-        Graph graphNoise;
-        auto noiseNode = std::make_unique<PerlinNoiseNode>();
-        NodeId idNoise = graphNoise.addNode(std::move(noiseNode));
-        Executor execNoise;
-        Context ctxNoise;
-        execNoise.execute(graphNoise, ctxNoise, {idNoise});
-        float val1 = std::any_cast<float>(ctxNoise.output);
-        execNoise.execute(graphNoise, ctxNoise, {idNoise});
-        float val2 = std::any_cast<float>(ctxNoise.output);
-        std::cout << "Noise values: " << val1 << ", " << val2 << " (should differ, caching disabled)" << std::endl;
+        std::ofstream("baked_graph.json") << j.dump(2);
+        std::cout << "Graph saved to baked_graph.json" << std::endl;
 
     } catch (const std::exception& e) {
-        std::cerr << "Standard exception: " << e.what() << std::endl;
-        std::cin.get();
-        return 1;
-    } catch (...) {
-        std::cerr << "Unknown exception!" << std::endl;
-        std::cin.get();
+        std::cerr << "Exception: " << e.what() << std::endl;
         return 1;
     }
 
