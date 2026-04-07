@@ -16,6 +16,7 @@ FetchContent_MakeAvailable(glfw)
 
 add_executable(3tone
     src/main.cpp
+    src/glad.c
     src/core/graph.cpp
     src/core/executor.cpp
     src/core/baking.cpp
