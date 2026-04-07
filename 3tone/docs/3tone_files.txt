@@ -1,0 +1,1166 @@
+< | source code | >
+
+============================================================
+.\CMakeLists.txt
+============================================================
+cmake_minimum_required(VERSION 3.16)
+project(3tone VERSION 0.1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+add_executable(3tone
+    src/main.cpp
+    src/core/graph.cpp
+    src/core/executor.cpp
+    src/assets/asset_manager.cpp
+    src/nodes/basic_nodes.cpp
+)
+
+target_include_directories(3tone PRIVATE src)
+target_include_directories(3tone PRIVATE include)   # здесь лежит папка nlohmann
+
+if(MSVC)
+    target_compile_options(3tone PRIVATE /W4 /EHsc)
+else()
+    target_compile_options(3tone PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+find_package(Threads REQUIRED)
+target_link_libraries(3tone Threads::Threads)
+
+# Если используете header-only nlohmann/json, достаточно указать include
+# Если же хотите через find_package, раскомментируйте:
+# find_package(nlohmann_json REQUIRED)
+# target_link_libraries(3tone Threads::Threads nlohmann_json::nlohmann_json)
+
+============================================================
+.\src\arxglue.hpp
+============================================================
+#pragma once
+
+#include <any>
+#include <functional>
+#include <unordered_map>
+#include <vector>
+#include <optional>
+#include <memory>
+#include <string>
+#include <typeindex>
+
+namespace arxglue {
+
+struct Context {
+    std::any input;
+    std::any output;
+    std::unordered_map<std::string, std::any> state;
+
+    template<typename T>
+    T& getState(const std::string& key) {
+        return std::any_cast<T&>(state[key]);
+    }
+
+    template<typename T>
+    void setState(const std::string& key, T&& value) {
+        state[key] = std::forward<T>(value);
+    }
+};
+
+using Component = std::function<void(Context&)>;
+
+struct MultiConnection {
+    Component source;
+    std::vector<Component> targets;
+    std::optional<std::function<void(Context&)>> transformer;
+};
+
+template<typename... Targets>
+MultiConnection connect(Component source, Targets... targets) {
+    return MultiConnection{source, {targets...}, std::nullopt};
+}
+
+template<typename... Targets>
+MultiConnection connect(Component source, std::function<void(Context&)> transformer, Targets... targets) {
+    return MultiConnection{source, {targets...}, transformer};
+}
+
+using NodeId = uint32_t;
+
+struct PortInfo {
+    std::string name;
+    std::type_index type;
+    bool required = true;
+};
+
+struct ComponentMetadata {
+    std::string name;
+    std::vector<PortInfo> inputs;
+    std::vector<PortInfo> outputs;
+    bool pure = false;
+    bool volatile_ = false;
+    bool threadSafe = false;
+};
+
+} // namespace arxglue
+
+============================================================
+.\src\main.cpp
+============================================================
+#include "core/graph.hpp"
+#include "core/executor.hpp"
+#include "nodes/basic_nodes.hpp"
+#include "types/type_system.hpp"
+#include <iostream>
+#include <exception>
+
+using namespace arxglue;
+
+int main() {
+    try {
+        initBasicTypes();
+        registerBasicNodes();
+
+        Graph graph;
+
+        auto const10 = std::make_unique<ConstantNode<int>>(10);
+        auto const20 = std::make_unique<ConstantNode<int>>(20);
+        auto addNode = std::make_unique<AddNode>();
+
+        NodeId id10 = graph.addNode(std::move(const10));
+        NodeId id20 = graph.addNode(std::move(const20));
+        NodeId idAdd = graph.addNode(std::move(addNode));
+
+        graph.addConnection({id10, 0, idAdd, 0});
+        graph.addConnection({id20, 0, idAdd, 1});
+
+        Executor executor(2);
+        Context ctx;
+
+        std::cout << "Starting first execution..." << std::endl;
+        executor.execute(graph, ctx, {idAdd});
+        int result = std::any_cast<int>(ctx.output);
+        std::cout << "Result: " << result << std::endl;
+
+        nlohmann::json j;
+        graph.serialize(j);
+        std::cout << "Serialized graph:\n" << j.dump(2) << std::endl;
+
+        Graph graph2;
+        graph2.deserialize(j);
+        Executor executor2;
+        Context ctx2;
+        executor2.execute(graph2, ctx2, {graph2.getNodes().back()->getId()});
+        int result2 = std::any_cast<int>(ctx2.output);
+        std::cout << "Deserialized result: " << result2 << std::endl;
+
+    } catch (const std::exception& e) {
+        std::cerr << "Standard exception: " << e.what() << std::endl;
+        std::cin.get();
+        return 1;
+    } catch (...) {
+        std::cerr << "Unknown exception!" << std::endl;
+        std::cin.get();
+        return 1;
+    }
+
+    std::cout << "Press Enter to exit..." << std::endl;
+    std::cin.get();
+    return 0;
+}
+
+============================================================
+.\src\assets\asset_manager.cpp
+============================================================
+// intentionally empty, all implementations are header-only
+
+============================================================
+.\src\assets\asset_manager.hpp
+============================================================
+#pragma once
+#include <any>
+#include <string>
+#include <unordered_map>
+#include <memory>
+#include <mutex>
+#include <fstream>
+#include <vector>
+#include <cstdint>
+
+namespace arxglue {
+
+class Asset {
+public:
+    virtual ~Asset() = default;
+    virtual std::type_index getType() const = 0;
+    virtual void writeToFile(const std::string& path) const = 0;
+};
+
+class TextureAsset : public Asset {
+public:
+    TextureAsset(int w, int h, const std::vector<uint8_t>& data)
+        : width(w), height(h), pixels(data) {}
+
+    std::type_index getType() const override { return typeid(TextureAsset); }
+
+    void writeToFile(const std::string& path) const override {
+        std::ofstream f(path, std::ios::binary);
+        int32_t w = width, h = height;
+        f.write(reinterpret_cast<const char*>(&w), sizeof(w));
+        f.write(reinterpret_cast<const char*>(&h), sizeof(h));
+        uint32_t size = static_cast<uint32_t>(pixels.size());
+        f.write(reinterpret_cast<const char*>(&size), sizeof(size));
+        f.write(reinterpret_cast<const char*>(pixels.data()), pixels.size());
+    }
+
+    static std::shared_ptr<TextureAsset> readFromFile(const std::string& path) {
+        std::ifstream f(path, std::ios::binary);
+        if (!f) return nullptr;
+        int32_t w, h;
+        f.read(reinterpret_cast<char*>(&w), sizeof(w));
+        f.read(reinterpret_cast<char*>(&h), sizeof(h));
+        uint32_t size;
+        f.read(reinterpret_cast<char*>(&size), sizeof(size));
+        std::vector<uint8_t> pixels(size);
+        f.read(reinterpret_cast<char*>(pixels.data()), size);
+        return std::make_shared<TextureAsset>(w, h, pixels);
+    }
+
+    int width, height;
+    std::vector<uint8_t> pixels;
+};
+
+class MeshAsset : public Asset {
+public:
+    struct Vertex { float x, y, z; };
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+
+    MeshAsset(const std::vector<Vertex>& v, const std::vector<uint32_t>& i)
+        : vertices(v), indices(i) {}
+
+    std::type_index getType() const override { return typeid(MeshAsset); }
+
+    void writeToFile(const std::string& path) const override {
+        std::ofstream f(path, std::ios::binary);
+        uint32_t vcount = static_cast<uint32_t>(vertices.size());
+        f.write(reinterpret_cast<const char*>(&vcount), sizeof(vcount));
+        f.write(reinterpret_cast<const char*>(vertices.data()), vcount * sizeof(Vertex));
+        uint32_t icount = static_cast<uint32_t>(indices.size());
+        f.write(reinterpret_cast<const char*>(&icount), sizeof(icount));
+        f.write(reinterpret_cast<const char*>(indices.data()), icount * sizeof(uint32_t));
+    }
+
+    static std::shared_ptr<MeshAsset> readFromFile(const std::string& path) {
+        std::ifstream f(path, std::ios::binary);
+        if (!f) return nullptr;
+        uint32_t vcount;
+        f.read(reinterpret_cast<char*>(&vcount), sizeof(vcount));
+        std::vector<Vertex> verts(vcount);
+        f.read(reinterpret_cast<char*>(verts.data()), vcount * sizeof(Vertex));
+        uint32_t icount;
+        f.read(reinterpret_cast<char*>(&icount), sizeof(icount));
+        std::vector<uint32_t> inds(icount);
+        f.read(reinterpret_cast<char*>(inds.data()), icount * sizeof(uint32_t));
+        return std::make_shared<MeshAsset>(verts, inds);
+    }
+};
+
+class AssetManager {
+public:
+    static AssetManager& instance() {
+        static AssetManager inst;
+        return inst;
+    }
+
+    std::shared_ptr<TextureAsset> loadTexture(const std::string& path) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto it = m_cache.find(path);
+        if (it != m_cache.end()) return std::dynamic_pointer_cast<TextureAsset>(it->second);
+        auto tex = TextureAsset::readFromFile(path);
+        if (tex) m_cache[path] = tex;
+        return tex;
+    }
+
+    std::shared_ptr<MeshAsset> loadMesh(const std::string& path) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto it = m_cache.find(path);
+        if (it != m_cache.end()) return std::dynamic_pointer_cast<MeshAsset>(it->second);
+        auto mesh = MeshAsset::readFromFile(path);
+        if (mesh) m_cache[path] = mesh;
+        return mesh;
+    }
+
+    void saveAsset(const std::string& path, std::shared_ptr<Asset> asset) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        asset->writeToFile(path);
+        m_cache[path] = asset;
+    }
+
+private:
+    std::unordered_map<std::string, std::shared_ptr<Asset>> m_cache;
+    std::mutex m_mutex;
+};
+
+} // namespace arxglue
+
+============================================================
+.\src\core\context.hpp
+============================================================
+#pragma once
+#include "../arxglue.hpp"
+
+namespace arxglue {
+using Context = arxglue::Context;
+}
+
+============================================================
+.\src\core\executor.cpp
+============================================================
+#include "executor.hpp"
+#include <unordered_set>
+#include <queue>
+
+namespace arxglue {
+
+Executor::Executor(size_t numThreads) {
+    if (numThreads == 0) numThreads = std::thread::hardware_concurrency();
+    if (numThreads == 0) numThreads = 1;
+    m_pool = std::make_unique<ThreadPool>(numThreads);
+}
+
+void Executor::execute(Graph& graph, Context& ctx, const std::vector<NodeId>& rootNodes) {
+    m_graph = &graph;
+    m_ctx = &ctx;
+
+    std::vector<NodeId> allNodes = graph.topologicalSort();
+
+    if (!rootNodes.empty()) {
+        std::unordered_set<NodeId> reachable;
+        std::queue<NodeId> q;
+        for (NodeId r : rootNodes) { q.push(r); reachable.insert(r); }
+        while (!q.empty()) {
+            NodeId cur = q.front(); q.pop();
+            for (NodeId dep : graph.getDependencies(cur)) {
+                if (!reachable.count(dep)) {
+                    reachable.insert(dep);
+                    q.push(dep);
+                }
+            }
+        }
+        std::vector<NodeId> filtered;
+        for (NodeId n : allNodes) {
+            if (reachable.count(n)) filtered.push_back(n);
+        }
+        allNodes = filtered;
+    }
+
+    runTopologically(allNodes);
+}
+
+void Executor::runTopologically(const std::vector<NodeId>& order) {
+    std::unordered_map<NodeId, int> depCount;
+    std::unordered_map<NodeId, std::vector<NodeId>> dependents;
+
+    for (NodeId id : order) {
+        depCount[id] = 0;
+        dependents[id].clear();
+    }
+    for (NodeId id : order) {
+        for (NodeId dep : m_graph->getDependencies(id)) {
+            if (depCount.count(dep)) {
+                depCount[id]++;
+                dependents[dep].push_back(id);
+            }
+        }
+    }
+
+    std::queue<NodeId> ready;
+    for (auto& [id, cnt] : depCount) {
+        if (cnt == 0) ready.push(id);
+    }
+
+    std::atomic<int> tasksRemaining = static_cast<int>(order.size());
+    std::mutex queueMutex;
+
+    while (!ready.empty() || tasksRemaining > 0) {
+        std::vector<NodeId> batch;
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            while (!ready.empty()) {
+                batch.push_back(ready.front());
+                ready.pop();
+            }
+        }
+        if (batch.empty()) {
+            std::this_thread::sleep_for(std::chrono::microseconds(10));
+            continue;
+        }
+
+        std::vector<std::future<void>> futures;
+        for (NodeId id : batch) {
+            futures.push_back(m_pool->enqueue([this, id, &depCount, &dependents, &ready, &tasksRemaining, &queueMutex]() {
+                executeNode(id);
+                tasksRemaining--;
+                for (NodeId dep : dependents[id]) {
+                    if (--depCount[dep] == 0) {
+                        std::lock_guard<std::mutex> lock(queueMutex);
+                        ready.push(dep);
+                    }
+                }
+            }));
+        }
+        for (auto& f : futures) f.get();
+    }
+}
+
+void Executor::executeNode(NodeId id) {
+    INode* node = m_graph->getNode(id);
+    if (!node) return;
+
+    if (!node->isDirty() && !node->getMetadata().volatile_) {
+        return;
+    }
+
+    Context localCtx;
+    for (const auto& conn : m_graph->getConnections()) {
+        if (conn.dstNode == id) {
+            INode* srcNode = m_graph->getNode(conn.srcNode);
+            if (srcNode) {
+                std::any value = srcNode->getCachedOutput();
+                std::string inKey = "in_" + std::to_string(id) + "_" + std::to_string(static_cast<int>(conn.dstPort));
+                localCtx.state[inKey] = value;
+            }
+        }
+    }
+
+    node->execute(localCtx);
+    node->setCachedOutput(localCtx.output);
+    node->setDirty(false);
+
+    for (const auto& conn : m_graph->getConnections()) {
+        if (conn.srcNode == id) {
+            std::string outKey = "out_" + std::to_string(id) + "_" + std::to_string(static_cast<int>(conn.srcPort));
+            m_ctx->state[outKey] = localCtx.output;
+        }
+    }
+
+    m_ctx->output = localCtx.output;
+}
+
+void Executor::invalidate(NodeId id) {
+    if (m_graph) m_graph->invalidateSubgraph(id);
+}
+
+} // namespace arxglue
+
+============================================================
+.\src\core\executor.hpp
+============================================================
+#pragma once
+#include "graph.hpp"
+#include "../threading/thread_pool.hpp"
+#include <atomic>
+#include <memory>
+
+namespace arxglue {
+
+class Executor {
+public:
+    explicit Executor(size_t numThreads = 0);
+    ~Executor() = default;
+
+    void execute(Graph& graph, Context& ctx, const std::vector<NodeId>& rootNodes = {});
+    void invalidate(NodeId id);
+
+private:
+    std::unique_ptr<ThreadPool> m_pool;
+    Graph* m_graph = nullptr;
+    Context* m_ctx = nullptr;
+
+    void runTopologically(const std::vector<NodeId>& order);
+    void executeNode(NodeId id);
+};
+
+} // namespace arxglue
+
+============================================================
+.\src\core\graph.cpp
+============================================================
+#include "graph.hpp"
+#include "../nodes/node_factory.hpp"
+#include <queue>
+#include <algorithm>
+#include <stdexcept>
+
+namespace arxglue {
+
+NodeId Graph::addNode(std::unique_ptr<INode> node) {
+    NodeId id = m_nextId++;
+    node->setId(id);
+    m_idToIndex[id] = m_nodes.size();
+    m_nodes.push_back(std::move(node));
+    m_adjValid = false;
+    return id;
+}
+
+void Graph::removeNode(NodeId id) {
+    auto it = m_idToIndex.find(id);
+    if (it == m_idToIndex.end()) return;
+    size_t idx = it->second;
+    m_nodes.erase(m_nodes.begin() + idx);
+    m_idToIndex.clear();
+    for (size_t i = 0; i < m_nodes.size(); ++i) {
+        m_idToIndex[m_nodes[i]->getId()] = i;
+    }
+    m_connections.erase(std::remove_if(m_connections.begin(), m_connections.end(),
+        [id](const Connection& c) { return c.srcNode == id || c.dstNode == id; }),
+        m_connections.end());
+    m_adjValid = false;
+}
+
+INode* Graph::getNode(NodeId id) {
+    auto it = m_idToIndex.find(id);
+    if (it == m_idToIndex.end()) return nullptr;
+    return m_nodes[it->second].get();
+}
+
+void Graph::addConnection(const Connection& conn) {
+    if (!getNode(conn.srcNode) || !getNode(conn.dstNode)) return;
+    m_connections.push_back(conn);
+    m_adjValid = false;
+    try {
+        topologicalSort();
+    } catch (const std::runtime_error&) {
+        m_connections.pop_back();
+        throw std::runtime_error("Connection would create a cycle");
+    }
+}
+
+void Graph::removeConnection(NodeId src, int srcPort, NodeId dst, int dstPort) {
+    auto it = std::find_if(m_connections.begin(), m_connections.end(),
+        [=](const Connection& c) {
+            return c.srcNode == src && c.srcPort == srcPort &&
+                   c.dstNode == dst && c.dstPort == dstPort;
+        });
+    if (it != m_connections.end()) {
+        m_connections.erase(it);
+        m_adjValid = false;
+    }
+}
+
+std::vector<NodeId> Graph::getDependencies(NodeId id) const {
+    std::vector<NodeId> deps;
+    for (const auto& conn : m_connections) {
+        if (conn.dstNode == id) deps.push_back(conn.srcNode);
+    }
+    return deps;
+}
+
+std::vector<NodeId> Graph::getDependents(NodeId id) const {
+    std::vector<NodeId> deps;
+    for (const auto& conn : m_connections) {
+        if (conn.srcNode == id) deps.push_back(conn.dstNode);
+    }
+    return deps;
+}
+
+void Graph::invalidateSubgraph(NodeId root) {
+    std::queue<NodeId> q;
+    q.push(root);
+    while (!q.empty()) {
+        NodeId id = q.front(); q.pop();
+        INode* node = getNode(id);
+        if (node && node->isDirty()) continue;
+        if (node) node->setDirty(true);
+        for (NodeId dep : getDependents(id)) {
+            q.push(dep);
+        }
+    }
+}
+
+void Graph::buildAdjacency() const {
+    if (m_adjValid) return;
+    size_t n = m_nodes.size();
+    m_adj.assign(n, {});
+    m_inDegree.assign(n, 0);
+    for (const auto& conn : m_connections) {
+        auto srcIt = m_idToIndex.find(conn.srcNode);
+        auto dstIt = m_idToIndex.find(conn.dstNode);
+        if (srcIt == m_idToIndex.end() || dstIt == m_idToIndex.end()) continue;
+        m_adj[srcIt->second].push_back(static_cast<NodeId>(dstIt->second));
+        m_inDegree[dstIt->second]++;
+    }
+    m_adjValid = true;
+}
+
+std::vector<NodeId> Graph::topologicalSort() const {
+    buildAdjacency();
+    size_t n = m_nodes.size();
+    std::vector<int> inDegree = m_inDegree;
+    std::queue<size_t> q;
+    for (size_t i = 0; i < n; ++i) {
+        if (inDegree[i] == 0) q.push(i);
+    }
+    std::vector<NodeId> result;
+    while (!q.empty()) {
+        size_t idx = q.front(); q.pop();
+        result.push_back(m_nodes[idx]->getId());
+        for (size_t neighbor : m_adj[idx]) {
+            if (--inDegree[neighbor] == 0) q.push(neighbor);
+        }
+    }
+    if (result.size() != n) {
+        throw std::runtime_error("Graph contains a cycle");
+    }
+    return result;
+}
+
+void Graph::serialize(nlohmann::json& j) const {
+    j["version"] = 1;
+    nlohmann::json nodesJson = nlohmann::json::array();
+    for (const auto& node : m_nodes) {
+        nlohmann::json nodeJson;
+        node->serialize(nodeJson);
+        nodeJson["id"] = node->getId();
+        nodesJson.push_back(nodeJson);
+    }
+    j["nodes"] = nodesJson;
+
+    nlohmann::json connsJson = nlohmann::json::array();
+    for (const auto& conn : m_connections) {
+        connsJson.push_back({
+            {"src", conn.srcNode},
+            {"srcPort", conn.srcPort},
+            {"dst", conn.dstNode},
+            {"dstPort", conn.dstPort}
+        });
+    }
+    j["connections"] = connsJson;
+}
+
+void Graph::deserialize(const nlohmann::json& j) {
+    m_nodes.clear();
+    m_idToIndex.clear();
+    m_connections.clear();
+    m_nextId = 1;
+    m_adjValid = false;
+
+    std::unordered_map<NodeId, NodeId> oldToNew;
+    for (const auto& nodeJson : j["nodes"]) {
+        std::string type = nodeJson["type"];
+        auto node = NodeFactory::instance().createNode(type);
+        if (!node) continue;
+        node->deserialize(nodeJson);
+        NodeId newId = addNode(std::move(node));
+        oldToNew[nodeJson["id"]] = newId;
+    }
+    for (const auto& connJson : j["connections"]) {
+        Connection conn;
+        conn.srcNode = oldToNew[connJson["src"]];
+        conn.srcPort = connJson["srcPort"];
+        conn.dstNode = oldToNew[connJson["dst"]];
+        conn.dstPort = connJson["dstPort"];
+        addConnection(conn);
+    }
+}
+
+} // namespace arxglue
+
+============================================================
+.\src\core\graph.hpp
+============================================================
+#pragma once
+#include "node.hpp"
+#include <vector>
+#include <unordered_map>
+#include <memory>
+
+namespace arxglue {
+
+struct Connection {
+    NodeId srcNode;
+    int srcPort;
+    NodeId dstNode;
+    int dstPort;
+};
+
+class Graph {
+public:
+    NodeId addNode(std::unique_ptr<INode> node);
+    void removeNode(NodeId id);
+    INode* getNode(NodeId id);
+    const std::vector<std::unique_ptr<INode>>& getNodes() const { return m_nodes; }
+
+    void addConnection(const Connection& conn);
+    void removeConnection(NodeId src, int srcPort, NodeId dst, int dstPort);
+    const std::vector<Connection>& getConnections() const { return m_connections; }
+
+    std::vector<NodeId> getDependencies(NodeId id) const;
+    std::vector<NodeId> getDependents(NodeId id) const;
+    void invalidateSubgraph(NodeId root);
+    std::vector<NodeId> topologicalSort() const;
+
+    void serialize(nlohmann::json& j) const;
+    void deserialize(const nlohmann::json& j);
+
+private:
+    std::vector<std::unique_ptr<INode>> m_nodes;
+    std::unordered_map<NodeId, size_t> m_idToIndex;
+    std::vector<Connection> m_connections;
+    NodeId m_nextId = 1;
+
+    mutable std::vector<std::vector<NodeId>> m_adj;
+    mutable std::vector<int> m_inDegree;
+    mutable bool m_adjValid = false;
+
+    void buildAdjacency() const;
+};
+
+} // namespace arxglue
+
+============================================================
+.\src\core\node.hpp
+============================================================
+#pragma once
+#include "../arxglue.hpp"
+#include <nlohmann/json.hpp>
+#include <memory>
+#include <vector>
+#include <iostream>
+
+namespace arxglue {
+
+class INode {
+public:
+    virtual ~INode() = default;
+    virtual void execute(Context& ctx) = 0;
+    virtual ComponentMetadata getMetadata() const = 0;
+    virtual void setParameter(const std::string& name, const std::any& value) = 0;
+    virtual std::any getParameter(const std::string& name) const = 0;
+    virtual void serialize(nlohmann::json& j) const = 0;
+    virtual void deserialize(const nlohmann::json& j) = 0;
+
+    void setId(NodeId id) { m_id = id; }
+    NodeId getId() const { return m_id; }
+
+    bool isDirty() const { return m_dirty; }
+    void setDirty(bool dirty) { m_dirty = dirty; }
+
+    void setCachedOutput(const std::any& output) { m_cachedOutput = output; }
+    std::any getCachedOutput() const { return m_cachedOutput; }
+
+    // ---- ИСПРАВЛЕНО: используем индекс порта, а не имя ----
+    std::any getInputValue(Context& ctx, int portIndex) const {
+        const auto& inputs = getMetadata().inputs;
+        if (portIndex >= 0 && portIndex < static_cast<int>(inputs.size())) {
+            std::string key = "in_" + std::to_string(m_id) + "_" + std::to_string(portIndex);
+            auto it = ctx.state.find(key);
+            if (it != ctx.state.end()) return it->second;
+        }
+        return {};
+    }
+
+    void setOutputValue(Context& ctx, int portIndex, const std::any& value) {
+        const auto& outputs = getMetadata().outputs;
+        if (portIndex >= 0 && portIndex < static_cast<int>(outputs.size())) {
+            std::string key = "out_" + std::to_string(m_id) + "_" + std::to_string(portIndex);
+            ctx.state[key] = value;
+        }
+        ctx.output = value;
+    }
+
+private:
+    NodeId m_id = 0;
+    bool m_dirty = true;
+    std::any m_cachedOutput;
+};
+
+} // namespace arxglue
+
+============================================================
+.\src\nodes\basic_nodes.cpp
+============================================================
+#include "basic_nodes.hpp"
+#include "node_factory.hpp"
+#include "../assets/asset_manager.hpp"
+#include <random>
+
+namespace arxglue {
+
+void AddNode::execute(Context& ctx) {
+    int a = std::any_cast<int>(getInputValue(ctx, 0));
+    int b = std::any_cast<int>(getInputValue(ctx, 1));
+    setOutputValue(ctx, 0, a + b);
+}
+
+void LoadTextureNode::execute(Context& ctx) {
+    auto tex = AssetManager::instance().loadTexture(m_path);
+    if (!tex) {
+        std::vector<uint8_t> dummy(64 * 64 * 4, 128);
+        tex = std::make_shared<TextureAsset>(64, 64, dummy);
+    }
+    setOutputValue(ctx, 0, tex);
+}
+
+void PerlinNoiseNode::execute(Context& ctx) {
+    static std::mt19937 rng(std::random_device{}());
+    static std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+    float value = dist(rng);
+    setOutputValue(ctx, 0, value);
+}
+
+void registerBasicNodes() {
+    auto& factory = NodeFactory::instance();
+    factory.registerNode("ConstantInt", []() { return std::make_unique<ConstantNode<int>>(0); });
+    factory.registerNode("ConstantFloat", []() { return std::make_unique<ConstantNode<float>>(0.0f); });
+    factory.registerNode("Add", []() { return std::make_unique<AddNode>(); });
+    factory.registerNode("LoadTexture", []() { return std::make_unique<LoadTextureNode>(); });
+    factory.registerNode("PerlinNoise", []() { return std::make_unique<PerlinNoiseNode>(); });
+}
+
+} // namespace arxglue
+
+============================================================
+.\src\nodes\basic_nodes.hpp
+============================================================
+#pragma once
+#include "../core/node.hpp"
+#include "../assets/asset_manager.hpp"
+#include <string>
+#include <iostream>
+
+namespace arxglue {
+
+// Функция для регистрации всех базовых узлов в фабрике
+void registerBasicNodes();
+
+template<typename T>
+class ConstantNode : public INode {
+public:
+    ConstantNode(T value) : m_value(value) {}
+
+    void execute(Context& ctx) override {
+        setOutputValue(ctx, 0, m_value);
+    }
+
+    ComponentMetadata getMetadata() const override {
+        return {"Constant" + std::string(typeid(T).name()), {}, {{"out", typeid(T)}}, true, false};
+    }
+
+    void setParameter(const std::string& name, const std::any& value) override {
+        if (name == "value") m_value = std::any_cast<T>(value);
+    }
+
+    std::any getParameter(const std::string& name) const override {
+        if (name == "value") return m_value;
+        return {};
+    }
+
+    void serialize(nlohmann::json& j) const override {
+        if constexpr (std::is_same_v<T, int>) {
+            j["type"] = "ConstantInt";
+        } else if constexpr (std::is_same_v<T, float>) {
+            j["type"] = "ConstantFloat";
+        } else {
+            j["type"] = "ConstantUnknown";
+        }
+        j["params"]["value"] = m_value;
+    }
+
+    void deserialize(const nlohmann::json& j) override {
+        if (j.contains("params") && j["params"].contains("value")) {
+            m_value = j["params"]["value"].get<T>();
+        }
+    }
+
+private:
+    T m_value;
+};
+
+class AddNode : public INode {
+public:
+    void execute(Context& ctx) override;
+    ComponentMetadata getMetadata() const override {
+        return {"Add", {{"a", typeid(int)}, {"b", typeid(int)}}, {{"out", typeid(int)}}, true, false};
+    }
+    void setParameter(const std::string&, const std::any&) override {}
+    std::any getParameter(const std::string&) const override { return {}; }
+    void serialize(nlohmann::json& j) const override { j["type"] = "Add"; }
+    void deserialize(const nlohmann::json&) override {}
+};
+
+class LoadTextureNode : public INode {
+public:
+    LoadTextureNode(const std::string& path = "") : m_path(path) {}
+    void execute(Context& ctx) override;
+    ComponentMetadata getMetadata() const override {
+        return {"LoadTexture", {}, {{"texture", typeid(std::shared_ptr<TextureAsset>)}}, false, false};
+    }
+    void setParameter(const std::string& name, const std::any& value) override {
+        if (name == "path") m_path = std::any_cast<std::string>(value);
+    }
+    std::any getParameter(const std::string& name) const override {
+        if (name == "path") return m_path;
+        return {};
+    }
+    void serialize(nlohmann::json& j) const override {
+        j["type"] = "LoadTexture";
+        j["params"]["path"] = m_path;
+    }
+    void deserialize(const nlohmann::json& j) override {
+        if (j.contains("params") && j["params"].contains("path"))
+            m_path = j["params"]["path"].get<std::string>();
+    }
+private:
+    std::string m_path;
+};
+
+class PerlinNoiseNode : public INode {
+public:
+    PerlinNoiseNode(float scale = 0.01f, int octaves = 4) : m_scale(scale), m_octaves(octaves) {}
+    void execute(Context& ctx) override;
+    ComponentMetadata getMetadata() const override {
+        return {"PerlinNoise", {}, {{"value", typeid(float)}}, false, false};
+    }
+    void setParameter(const std::string& name, const std::any& value) override {
+        if (name == "scale") m_scale = std::any_cast<float>(value);
+        else if (name == "octaves") m_octaves = std::any_cast<int>(value);
+    }
+    std::any getParameter(const std::string& name) const override {
+        if (name == "scale") return m_scale;
+        if (name == "octaves") return m_octaves;
+        return {};
+    }
+    void serialize(nlohmann::json& j) const override {
+        j["type"] = "PerlinNoise";
+        j["params"]["scale"] = m_scale;
+        j["params"]["octaves"] = m_octaves;
+    }
+    void deserialize(const nlohmann::json& j) override {
+        if (j.contains("params")) {
+            if (j["params"].contains("scale")) m_scale = j["params"]["scale"].get<float>();
+            if (j["params"].contains("octaves")) m_octaves = j["params"]["octaves"].get<int>();
+        }
+    }
+private:
+    float m_scale;
+    int m_octaves;
+};
+
+} // namespace arxglue
+
+============================================================
+.\src\nodes\node_factory.hpp
+============================================================
+#pragma once
+#include "../core/node.hpp"
+#include <memory>
+#include <unordered_map>
+#include <functional>
+
+namespace arxglue {
+
+class NodeFactory {
+public:
+    using Creator = std::function<std::unique_ptr<INode>()>;
+
+    static NodeFactory& instance() {
+        static NodeFactory inst;
+        return inst;
+    }
+
+    void registerNode(const std::string& type, Creator creator) {
+        m_creators[type] = std::move(creator);
+    }
+
+    std::unique_ptr<INode> createNode(const std::string& type) {
+        auto it = m_creators.find(type);
+        if (it == m_creators.end()) return nullptr;
+        return it->second();
+    }
+
+private:
+    std::unordered_map<std::string, Creator> m_creators;
+};
+
+} // namespace arxglue
+
+============================================================
+.\src\threading\thread_pool.hpp
+============================================================
+#pragma once
+
+#include <vector>
+#include <queue>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <functional>
+#include <future>
+#include <atomic>
+
+namespace arxglue {
+
+class ThreadPool {
+public:
+    explicit ThreadPool(size_t numThreads = std::thread::hardware_concurrency()) {
+        for (size_t i = 0; i < numThreads; ++i) {
+            m_workers.emplace_back([this] {
+                while (true) {
+                    std::function<void()> task;
+                    {
+                        std::unique_lock<std::mutex> lock(m_mutex);
+                        m_cv.wait(lock, [this] { return m_stop || !m_tasks.empty(); });
+                        if (m_stop && m_tasks.empty()) return;
+                        task = std::move(m_tasks.front());
+                        m_tasks.pop();
+                    }
+                    task();
+                }
+            });
+        }
+    }
+
+    ~ThreadPool() {
+        {
+            std::unique_lock<std::mutex> lock(m_mutex);
+            m_stop = true;
+        }
+        m_cv.notify_all();
+        for (std::thread& worker : m_workers) {
+            if (worker.joinable()) worker.join();
+        }
+    }
+
+    template<typename F, typename... Args>
+    auto enqueue(F&& f, Args&&... args) -> std::future<typename std::invoke_result_t<F, Args...>> {
+        using return_type = typename std::invoke_result_t<F, Args...>;
+        auto task = std::make_shared<std::packaged_task<return_type()>>(
+            std::bind(std::forward<F>(f), std::forward<Args>(args)...)
+        );
+        std::future<return_type> res = task->get_future();
+        {
+            std::unique_lock<std::mutex> lock(m_mutex);
+            if (m_stop) throw std::runtime_error("enqueue on stopped ThreadPool");
+            m_tasks.emplace([task]() { (*task)(); });
+        }
+        m_cv.notify_one();
+        return res;
+    }
+
+private:
+    std::vector<std::thread> m_workers;
+    std::queue<std::function<void()>> m_tasks;
+    std::mutex m_mutex;
+    std::condition_variable m_cv;
+    std::atomic<bool> m_stop{false};
+};
+
+} // namespace arxglue
+
+============================================================
+.\src\types\type_system.hpp
+============================================================
+#pragma once
+#include <any>
+#include <typeindex>
+#include <functional>
+#include <unordered_map>
+#include <stdexcept>
+
+namespace arxglue {
+
+enum class TypeId : uint32_t {
+    Unknown = 0,
+    Int,
+    Float,
+    String,
+    Texture,
+    Mesh,
+    Material,
+    Scene
+};
+
+struct PairHash {
+    template<typename T1, typename T2>
+    std::size_t operator()(const std::pair<T1, T2>& p) const {
+        auto h1 = std::hash<T1>{}(p.first);
+        auto h2 = std::hash<T2>{}(p.second);
+        return h1 ^ (h2 << 1);
+    }
+};
+
+class TypeSystem {
+public:
+    static TypeSystem& instance() {
+        static TypeSystem inst;
+        return inst;
+    }
+
+    void registerType(TypeId id, const std::type_index& stdType, TypeId parent = TypeId::Unknown) {
+        m_typeInfo.emplace(id, TypeInfo(stdType, parent));
+    }
+
+    bool canConvert(TypeId from, TypeId to) const {
+        if (from == to) return true;
+        auto it = m_typeInfo.find(from);
+        if (it == m_typeInfo.end()) return false;
+        TypeId cur = it->second.parent;
+        while (cur != TypeId::Unknown) {
+            if (cur == to) return true;
+            auto pit = m_typeInfo.find(cur);
+            if (pit == m_typeInfo.end()) break;
+            cur = pit->second.parent;
+        }
+        return m_converters.find({from, to}) != m_converters.end();
+    }
+
+    std::any convert(const std::any& value, TypeId from, TypeId to) const {
+        if (from == to) return value;
+        auto key = std::make_pair(from, to);
+        auto it = m_converters.find(key);
+        if (it != m_converters.end()) return it->second(value);
+        auto infoIt = m_typeInfo.find(from);
+        if (infoIt != m_typeInfo.end() && infoIt->second.parent != TypeId::Unknown)
+            return convert(value, infoIt->second.parent, to);
+        throw std::runtime_error("No conversion available");
+    }
+
+    void registerConverter(TypeId from, TypeId to, std::function<std::any(const std::any&)> conv) {
+        m_converters[{from, to}] = std::move(conv);
+    }
+
+private:
+    struct TypeInfo {
+        std::type_index stdType;
+        TypeId parent;
+
+        // Запрещаем конструктор по умолчанию, разрешаем только с параметрами
+        TypeInfo() = delete;
+        TypeInfo(const std::type_index& t, TypeId p) : stdType(t), parent(p) {}
+    };
+
+    std::unordered_map<TypeId, TypeInfo> m_typeInfo;
+    std::unordered_map<std::pair<TypeId, TypeId>, std::function<std::any(const std::any&)>, PairHash> m_converters;
+};
+
+inline void initBasicTypes() {
+    auto& ts = TypeSystem::instance();
+    ts.registerType(TypeId::Int, typeid(int));
+    ts.registerType(TypeId::Float, typeid(float));
+    ts.registerType(TypeId::String, typeid(std::string));
+    ts.registerType(TypeId::Texture, typeid(std::shared_ptr<class TextureAsset>));
+    ts.registerType(TypeId::Mesh, typeid(std::shared_ptr<class MeshAsset>));
+
+    ts.registerConverter(TypeId::Int, TypeId::Float, [](const std::any& v) -> std::any {
+        return (float)std::any_cast<int>(v);
+    });
+    ts.registerConverter(TypeId::Float, TypeId::Int, [](const std::any& v) -> std::any {
+        return (int)std::any_cast<float>(v);
+    });
+}
+
+} // namespace arxglue
+
+< | end of source code | >

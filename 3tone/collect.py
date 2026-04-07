@@ -2,7 +2,7 @@ import os
 
 def collect_files_simple():
     extensions = {'.hpp', '.cpp', '.txt'}
-    ignore_dirs = {'build', 'include'}
+    ignore_dirs = {'build', 'include', 'docs'}
     
     with open('3tone_files.txt', 'w', encoding='utf-8') as out:
         for root, dirs, files in os.walk('.'):
