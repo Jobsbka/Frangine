@@ -1,138 +1,212 @@
 #include "core/graph.hpp"
 #include "core/executor.hpp"
-#include "core/baking.hpp"
 #include "nodes/basic_nodes.hpp"
-#include "nodes/checker_texture.hpp"
-#include "nodes/asset_node.hpp"
+#include "nodes/render_nodes.hpp"
 #include "types/type_system.hpp"
-#include "assets/asset_manager.hpp"
+#include "render/graphics_device.hpp"
 #include <iostream>
 #include <exception>
 #include <chrono>
-#include <filesystem>
+#include <fstream>
+#include <array>
+#include <cmath>
+
+#define GLFW_INCLUDE_NONE
+#include <GLFW/glfw3.h>
 
 using namespace arxglue;
 
+// Создание тестового меша (куб) и сохранение в файл
+void createTestMeshFile(const std::string& path) {
+    // Вершины: позиция (3), нормаль (3)
+    std::vector<float> vertices = {
+        // Передняя грань
+        -0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,
+         0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,
+         0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,
+        -0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,
+        // Задняя грань
+        -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
+         0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
+         0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
+        -0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
+        // Левая грань
+        -0.5f, -0.5f, -0.5f, -1.0f,  0.0f,  0.0f,
+        -0.5f, -0.5f,  0.5f, -1.0f,  0.0f,  0.0f,
+        -0.5f,  0.5f,  0.5f, -1.0f,  0.0f,  0.0f,
+        -0.5f,  0.5f, -0.5f, -1.0f,  0.0f,  0.0f,
+        // Правая грань
+         0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,
+         0.5f, -0.5f,  0.5f,  1.0f,  0.0f,  0.0f,
+         0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,
+         0.5f,  0.5f, -0.5f,  1.0f,  0.0f,  0.0f,
+        // Верхняя грань
+        -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,
+        -0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,
+         0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,
+         0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,
+        // Нижняя грань
+        -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,
+        -0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,
+         0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,
+         0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f
+    };
+    std::vector<uint32_t> indices = {
+        0, 1, 2, 2, 3, 0,       // передняя
+        4, 5, 6, 6, 7, 4,       // задняя
+        8, 9,10,10,11, 8,       // левая
+       12,13,14,14,15,12,       // правая
+       16,17,18,18,19,16,       // верхняя
+       20,21,22,22,23,20        // нижняя
+    };
+    std::vector<int> attribSizes = {3, 3};
+
+    std::ofstream file(path, std::ios::binary);
+    uint32_t vcount = static_cast<uint32_t>(vertices.size());
+    file.write(reinterpret_cast<const char*>(&vcount), sizeof(vcount));
+    file.write(reinterpret_cast<const char*>(vertices.data()), vcount * sizeof(float));
+    uint32_t icount = static_cast<uint32_t>(indices.size());
+    file.write(reinterpret_cast<const char*>(&icount), sizeof(icount));
+    file.write(reinterpret_cast<const char*>(indices.data()), icount * sizeof(uint32_t));
+    uint32_t acount = static_cast<uint32_t>(attribSizes.size());
+    file.write(reinterpret_cast<const char*>(&acount), sizeof(acount));
+    file.write(reinterpret_cast<const char*>(attribSizes.data()), acount * sizeof(int));
+}
+
+static std::array<float, 16> identityMatrix() {
+    std::array<float, 16> m{};
+    m[0] = m[5] = m[10] = m[15] = 1.0f;
+    return m;
+}
+
+static std::array<float, 16> rotateY(float angle) {
+    std::array<float, 16> m = identityMatrix();
+    float c = std::cos(angle);
+    float s = std::sin(angle);
+    m[0] = c;
+    m[2] = s;
+    m[8] = -s;
+    m[10] = c;
+    return m;
+}
+
 int main() {
     try {
+        // Инициализация GLFW
+        if (!glfwInit()) {
+            std::cerr << "Failed to initialize GLFW" << std::endl;
+            return -1;
+        }
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);
+        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+        GLFWwindow* window = glfwCreateWindow(800, 600, "3Tone Render Test", nullptr, nullptr);
+        if (!window) {
+            std::cerr << "Failed to create window" << std::endl;
+            glfwTerminate();
+            return -1;
+        }
+        glfwMakeContextCurrent(window);
+        glfwSwapInterval(1);
+
+        auto& device = render::GraphicsDevice::instance();
+        device.initialize(window);
+
         initBasicTypes();
         registerBasicNodes();
+        registerRenderNodes();
 
-        std::cout << "=== 3Tone Baking Demo ===" << std::endl;
+        createTestMeshFile("cube.3tm");
 
-        // Создаём граф: CheckerTexture -> (результат)
-        Graph graph;
+        auto scene = std::make_shared<render::Scene>();
 
-        auto checker = std::make_unique<CheckerTextureNode>(512, 512, 8, 8);
-        NodeId checkerId = graph.addNode(std::move(checker));
+        std::ifstream file("cube.3tm", std::ios::binary);
+        if (!file) throw std::runtime_error("Failed to open cube.3tm");
+        uint32_t vcount;
+        file.read(reinterpret_cast<char*>(&vcount), sizeof(vcount));
+        std::vector<float> vertices(vcount);
+        file.read(reinterpret_cast<char*>(vertices.data()), vcount * sizeof(float));
+        uint32_t icount;
+        file.read(reinterpret_cast<char*>(&icount), sizeof(icount));
+        std::vector<uint32_t> indices(icount);
+        file.read(reinterpret_cast<char*>(indices.data()), icount * sizeof(uint32_t));
+        uint32_t acount;
+        file.read(reinterpret_cast<char*>(&acount), sizeof(acount));
+        std::vector<int> attribSizes(acount);
+        file.read(reinterpret_cast<char*>(attribSizes.data()), acount * sizeof(int));
+        auto mesh = device.createMesh(vertices, indices, attribSizes);
 
-        Executor executor(2);
-        Context ctx;
-
-        // Первое выполнение – генерация текстуры
-        std::cout << "Generating checker texture..." << std::endl;
-        executor.execute(graph, ctx, {checkerId});
-
-        if (!ctx.output.has_value()) {
-            std::cerr << "No output from checker texture!" << std::endl;
-            return 1;
-        }
-        std::cout << "Output type: " << ctx.output.type().name() << std::endl;
-        auto tex = std::any_cast<std::shared_ptr<TextureAsset>>(ctx.output);
-        std::cout << "Generated texture size: " << tex->width << "x" << tex->height << std::endl;
-
-        // Запекаем подграф в PNG
-        std::string bakePath = "baked_checker.png";
-        std::cout << "Baking subgraph to " << bakePath << "..." << std::endl;
-        NodeId assetId = bakeSubgraph(graph, checkerId, bakePath, "texture");
-        std::cout << "Baked. New AssetNode ID: " << assetId << std::endl;
-
-        // Выполняем граф снова, теперь через AssetNode
-        Context ctx2;
-        executor.execute(graph, ctx2, {assetId});
-
-        std::cout << "ctx2.output type: " << ctx2.output.type().name() << std::endl;
-        if (ctx2.output.type() == typeid(std::shared_ptr<TextureAsset>)) {
-            auto tex2 = std::any_cast<std::shared_ptr<TextureAsset>>(ctx2.output);
-            std::cout << "AssetNode texture size: " << tex2->width << "x" << tex2->height << std::endl;
-
-            // Сравниваем пиксели (первые несколько)
-            bool match = (tex->width == tex2->width && tex->height == tex2->height);
-            if (match) {
-                for (size_t i = 0; i < std::min(tex->pixels.size(), tex2->pixels.size()); ++i) {
-                    if (tex->pixels[i] != tex2->pixels[i]) {
-                        match = false;
-                        break;
-                    }
-                }
+        // Простой шейдер без освещения (чистый цвет)
+        const char* vertexSrc = R"(
+            #version 450 core
+            layout(location = 0) in vec3 aPos;
+            uniform mat4 uModel;
+            uniform mat4 uView;
+            uniform mat4 uProjection;
+            void main() {
+                gl_Position = uProjection * uView * uModel * vec4(aPos, 1.0);
             }
-            std::cout << "Pixel comparison: " << (match ? "MATCH" : "DIFFER") << std::endl;
-        } else {
-            std::cerr << "Unexpected output type from AssetNode" << std::endl;
-            if (ctx2.output.has_value()) {
-                std::cerr << "Actual type: " << ctx2.output.type().name() << std::endl;
-            } else {
-                std::cerr << "Output is empty!" << std::endl;
+        )";
+        const char* fragmentSrc = R"(
+            #version 450 core
+            uniform vec3 uColor;
+            out vec4 FragColor;
+            void main() {
+                FragColor = vec4(uColor, 1.0);
             }
+        )";
+
+        auto shader = device.createShader(vertexSrc, fragmentSrc);
+        auto mat = device.createMaterial(shader);
+        mat->setParameter("uColor", std::array<float,3>{1.0f, 0.5f, 0.2f}); // оранжевый
+
+        scene->addRenderable(mesh, mat, identityMatrix());
+
+        auto cam = std::make_shared<render::Camera>();
+        cam->lookAt({0.0f, 1.0f, 3.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f});
+        const float pi = 3.1415926535f;
+        cam->setPerspective(45.0f * pi / 180.0f, 800.0f/600.0f, 0.1f, 100.0f);
+
+        float angle = 0.0f;
+        auto lastTime = std::chrono::high_resolution_clock::now();
+
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+
+            auto currentTime = std::chrono::high_resolution_clock::now();
+            float deltaTime = std::chrono::duration<float>(currentTime - lastTime).count();
+            lastTime = currentTime;
+
+            angle += deltaTime * 1.0f;
+            if (angle > 2.0f * pi) angle -= 2.0f * pi;
+
+            auto newTransform = rotateY(angle);
+            scene = std::make_shared<render::Scene>();
+            scene->addRenderable(mesh, mat, newTransform);
+
+            device.clear(0.2f, 0.3f, 0.3f, 1.0f);
+            device.setViewport(0, 0, 800, 600);
+
+            render::CommandBuffer cmd;
+            cmd.begin();
+            cmd.setRenderTarget(nullptr);
+            cmd.clear(0.2f, 0.3f, 0.3f, 1.0f);
+            cmd.setViewport(0, 0, 800, 600);
+            cmd.drawScene(*scene, *cam);
+            cmd.end();
+            cmd.execute();
+
+            device.swapBuffers();
         }
 
-        // Сериализация графа с запечённым узлом
-        nlohmann::json j;
-        graph.serialize(j);
-        std::ofstream("baked_graph.json") << j.dump(2);
-        std::cout << "Graph saved to baked_graph.json" << std::endl;
+        device.shutdown();
+        glfwDestroyWindow(window);
+        glfwTerminate();
 
+        std::cout << "Rendering test completed." << std::endl;
+        return 0;
     } catch (const std::exception& e) {
         std::cerr << "Exception: " << e.what() << std::endl;
         return 1;
     }
-
-    std::cout << "\n=== Type Conversion Test ===" << std::endl;
-    Graph graph2;
-
-    // Узел, выдающий целое число 42
-    auto constInt = std::make_unique<ConstantNode<int>>(42);
-    NodeId constId = graph2.addNode(std::move(constInt));
-
-    // Узел-потребитель, ожидающий float
-    auto consumer = std::make_unique<FloatConsumerNode>();
-    NodeId consumerId = graph2.addNode(std::move(consumer));
-
-    // Соединяем int -> float (автоматически вставится ConvertNode)
-    Connection conn;
-    conn.srcNode = constId;
-    conn.srcPort = 0;
-    conn.dstNode = consumerId;
-    conn.dstPort = 0;
-
-    try {
-        graph2.addConnection(conn);
-        std::cout << "Connection added successfully (converter inserted automatically)." << std::endl;
-    } catch (const std::exception& e) {
-        std::cerr << "Failed to add connection: " << e.what() << std::endl;
-        return 1;
-    }
-
-    // Проверяем, что в графе теперь три узла
-    std::cout << "Graph2 node count: " << graph2.getNodes().size() << std::endl;
-    for (const auto& nodePtr : graph2.getNodes()) {
-        std::cout << "  Node: " << nodePtr->getMetadata().name << std::endl;
-    }
-
-    // Выполняем граф
-    Executor exec2(1);
-    Context ctx3;
-    exec2.execute(graph2, ctx3, {consumerId});
-
-    // Проверяем результат (должен быть float 42.0f)
-    if (ctx3.output.has_value() && ctx3.output.type() == typeid(float)) {
-        float result = std::any_cast<float>(ctx3.output);
-        std::cout << "Final output: " << result << std::endl;
-    } else {
-        std::cerr << "Unexpected output type!" << std::endl;
-    }
-
-    std::cout << "\nPress Enter to exit..." << std::endl;
-    std::cin.get();
-    return 0;
 }

@@ -7,6 +7,14 @@
 #include <iostream>
 #include <memory>
 
+namespace arxglue::render {
+    class Texture;
+    class Mesh;
+    class Material;
+    class Scene;
+    class Camera;
+}
+
 namespace arxglue {
 
 enum class TypeId : uint32_t {
@@ -17,7 +25,8 @@ enum class TypeId : uint32_t {
     Texture,
     Mesh,
     Material,
-    Scene
+    Scene,
+    Camera
 };
 
 struct PairHash {
@@ -116,6 +125,11 @@ inline void initBasicTypes() {
     ts.registerType(TypeId::String, typeid(std::string));
     ts.registerType(TypeId::Texture, typeid(std::shared_ptr<class TextureAsset>));
     ts.registerType(TypeId::Mesh, typeid(std::shared_ptr<class MeshAsset>));
+    ts.registerType(TypeId::Texture, typeid(std::shared_ptr<render::Texture>));
+    ts.registerType(TypeId::Mesh, typeid(std::shared_ptr<render::Mesh>));
+    ts.registerType(TypeId::Material, typeid(std::shared_ptr<render::Material>));
+    ts.registerType(TypeId::Scene, typeid(std::shared_ptr<render::Scene>));
+    ts.registerType(TypeId::Camera, typeid(std::shared_ptr<render::Camera>));
 
     ts.registerConverter(TypeId::Int, TypeId::Float, [](const std::any& v) -> std::any {
         return static_cast<float>(std::any_cast<int>(v));
