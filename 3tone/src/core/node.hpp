@@ -30,6 +30,31 @@ public:
     void setCachedOutput(const std::any& output) { m_cachedOutput = output; }
     std::any getCachedOutput() const { return m_cachedOutput; }
 
+    std::type_index getInputPortType(int portIndex) const {
+        const auto& inputs = getMetadata().inputs;
+        if (portIndex >= 0 && portIndex < static_cast<int>(inputs.size())) {
+            return inputs[portIndex].type;
+        }
+        return typeid(void);
+    }
+
+    std::type_index getOutputPortType(int portIndex) const {
+        const auto& outputs = getMetadata().outputs;
+        if (portIndex >= 0 && portIndex < static_cast<int>(outputs.size())) {
+            return outputs[portIndex].type;
+        }
+        return typeid(void);
+    }
+
+    bool areParametersChanged() const {
+        size_t currentHash = computeParamsHash();
+        if (currentHash != m_lastParamsHash) {
+            m_lastParamsHash = currentHash;
+            return true;
+        }
+        return false;
+    }
+
     // Получить значение входа с автоматической конвертацией к ожидаемому типу
     std::any getInputValue(Context& ctx, int portIndex) const {
         const auto& inputs = getMetadata().inputs;
@@ -99,11 +124,15 @@ public:
         }
     }
 
+protected:
+    virtual size_t computeParamsHash() const { return 0; }
+
 private:
     NodeId m_id = 0;
     bool m_dirty = true;
     std::any m_cachedOutput;
     mutable std::vector<std::any> m_lastInputs;
+    mutable size_t m_lastParamsHash = 0;
 
     // Безопасное сравнение двух std::any
     static bool compareAny(const std::any& a, const std::any& b) {

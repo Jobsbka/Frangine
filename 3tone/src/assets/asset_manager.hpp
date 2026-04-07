@@ -7,6 +7,11 @@
 #include <fstream>
 #include <vector>
 #include <cstdint>
+#include <algorithm>
+
+// Заголовки stb (реализация будет в отдельном .cpp)
+#include "stb_image.h"
+#include "stb_image_write.h"
 
 namespace arxglue {
 
@@ -25,26 +30,51 @@ public:
     std::type_index getType() const override { return typeid(TextureAsset); }
 
     void writeToFile(const std::string& path) const override {
-        std::ofstream f(path, std::ios::binary);
-        int32_t w = width, h = height;
-        f.write(reinterpret_cast<const char*>(&w), sizeof(w));
-        f.write(reinterpret_cast<const char*>(&h), sizeof(h));
-        uint32_t size = static_cast<uint32_t>(pixels.size());
-        f.write(reinterpret_cast<const char*>(&size), sizeof(size));
-        f.write(reinterpret_cast<const char*>(pixels.data()), pixels.size());
+        std::string ext;
+        size_t dotPos = path.find_last_of('.');
+        if (dotPos != std::string::npos) {
+            ext = path.substr(dotPos);
+        }
+
+        if (ext == ".png") {
+            stbi_write_png(path.c_str(), width, height, 4, pixels.data(), width * 4);
+        } else {
+            std::ofstream f(path, std::ios::binary);
+            int32_t w = width, h = height;
+            f.write(reinterpret_cast<const char*>(&w), sizeof(w));
+            f.write(reinterpret_cast<const char*>(&h), sizeof(h));
+            uint32_t size = static_cast<uint32_t>(pixels.size());
+            f.write(reinterpret_cast<const char*>(&size), sizeof(size));
+            f.write(reinterpret_cast<const char*>(pixels.data()), pixels.size());
+        }
     }
 
     static std::shared_ptr<TextureAsset> readFromFile(const std::string& path) {
-        std::ifstream f(path, std::ios::binary);
-        if (!f) return nullptr;
-        int32_t w, h;
-        f.read(reinterpret_cast<char*>(&w), sizeof(w));
-        f.read(reinterpret_cast<char*>(&h), sizeof(h));
-        uint32_t size;
-        f.read(reinterpret_cast<char*>(&size), sizeof(size));
-        std::vector<uint8_t> pixels(size);
-        f.read(reinterpret_cast<char*>(pixels.data()), size);
-        return std::make_shared<TextureAsset>(w, h, pixels);
+        std::string ext;
+        size_t dotPos = path.find_last_of('.');
+        if (dotPos != std::string::npos) {
+            ext = path.substr(dotPos);
+        }
+
+        if (ext == ".png") {
+            int w, h, comp;
+            unsigned char* data = stbi_load(path.c_str(), &w, &h, &comp, 4);
+            if (!data) return nullptr;
+            std::vector<uint8_t> pixels(data, data + w * h * 4);
+            stbi_image_free(data);
+            return std::make_shared<TextureAsset>(w, h, pixels);
+        } else {
+            std::ifstream f(path, std::ios::binary);
+            if (!f) return nullptr;
+            int32_t w, h;
+            f.read(reinterpret_cast<char*>(&w), sizeof(w));
+            f.read(reinterpret_cast<char*>(&h), sizeof(h));
+            uint32_t size;
+            f.read(reinterpret_cast<char*>(&size), sizeof(size));
+            std::vector<uint8_t> pixels(size);
+            f.read(reinterpret_cast<char*>(pixels.data()), size);
+            return std::make_shared<TextureAsset>(w, h, pixels);
+        }
     }
 
     int width, height;

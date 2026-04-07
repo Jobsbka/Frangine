@@ -5,6 +5,9 @@ def collect_files_simple():
     ignore_dirs = {'build', 'include', 'docs'}
     
     with open('3tone_files.txt', 'w', encoding='utf-8') as out:
+        # Начальный тег
+        out.write('< | source code | >\n')
+        
         for root, dirs, files in os.walk('.'):
             # Пропускаем игнорируемые папки
             dirs[:] = [d for d in dirs if d not in ignore_dirs]
@@ -19,7 +22,10 @@ def collect_files_simple():
                         print(f'✓ {path}')
                     except Exception as e:
                         print(f'✗ {path} - {e}')
+        
+        # Конечный тег
+        out.write('\n< | end of source code | >\n')
 
 if __name__ == "__main__":
     collect_files_simple()
-    print("Готово! Файлы сохранены в backend_files.txt")
+    print("Готово! Файлы сохранены в 3tone_files.txt")

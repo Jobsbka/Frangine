@@ -134,9 +134,9 @@ void Executor::executeNode(NodeId id) {
     bool needExecute = true;
     const auto& metadata = node->getMetadata();
     if (!metadata.volatile_ && !node->isDirty()) {
-        // Если не volatile и не грязный, проверяем входы
-        if (!node->areInputsChanged(localCtx)) {
-            needExecute = false; // входы не изменились – используем кэш
+        // Если не volatile и не грязный, проверяем входы и параметры
+        if (!node->areInputsChanged(localCtx) && !node->areParametersChanged()) {
+            needExecute = false; // входы и параметры не изменились – используем кэш
         }
     }
 

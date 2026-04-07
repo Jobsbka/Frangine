@@ -50,6 +50,11 @@ public:
         }
     }
 
+protected:
+    size_t computeParamsHash() const override {
+        return std::hash<T>{}(m_value);
+    }
+
 private:
     T m_value;
 };
@@ -131,6 +136,28 @@ public:
 private:
     float m_scale;
     int m_octaves;
+};
+
+class FloatConsumerNode : public INode {
+public:
+    void execute(Context& ctx) override {
+        float val = std::any_cast<float>(getInputValue(ctx, 0));
+        setOutputValue(ctx, 0, val);
+        // Для демонстрации выведем в консоль
+        std::cout << "[FloatConsumer] Received: " << val << std::endl;
+    }
+
+    ComponentMetadata getMetadata() const override {
+        return {"FloatConsumer",
+                {{"in", typeid(float), true}},
+                {{"out", typeid(float)}},
+                true, false};
+    }
+
+    void setParameter(const std::string&, const std::any&) override {}
+    std::any getParameter(const std::string&) const override { return {}; }
+    void serialize(nlohmann::json& j) const override { j["type"] = "FloatConsumer"; }
+    void deserialize(const nlohmann::json&) override {}
 };
 
 } // namespace arxglue
