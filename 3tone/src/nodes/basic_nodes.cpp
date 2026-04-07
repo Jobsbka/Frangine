@@ -1,9 +1,11 @@
+// src/nodes/basic_nodes.cpp
 #include "basic_nodes.hpp"
 #include "node_factory.hpp"
 #include "../assets/asset_manager.hpp"
 #include <random>
 #include "checker_texture.hpp"
 #include "asset_node.hpp"
+#include "convert_node.hpp"
 
 namespace arxglue {
 
@@ -38,5 +40,8 @@ void registerBasicNodes() {
     factory.registerNode("PerlinNoise", []() { return std::make_unique<PerlinNoiseNode>(); });
     factory.registerNode("CheckerTexture", []() { return std::make_unique<CheckerTextureNode>(); });
     factory.registerNode("AssetNode", []() { return std::make_unique<AssetNode>(); });
+    factory.registerNode("ConvertNode", []() { return std::make_unique<ConvertNode>(); });
+    factory.registerNode("FloatConsumer", []() { return std::make_unique<FloatConsumerNode>(); });
 }
+
 } // namespace arxglue

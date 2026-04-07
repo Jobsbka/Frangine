@@ -1,0 +1,36 @@
+Структура каталога: 3tone/
+============================================================
+├── include/
+│   ├── nlohmann/
+│   │   └── json.hpp
+│   ├── stb_image.h
+│   └── stb_image_write.h
+├── src/
+│   ├── assets/
+│   │   ├── asset_manager.cpp
+│   │   ├── asset_manager.hpp
+│   │   └── stb_impl.cpp
+│   ├── core/
+│   │   ├── baking.cpp
+│   │   ├── baking.hpp
+│   │   ├── context.hpp
+│   │   ├── executor.cpp
+│   │   ├── executor.hpp
+│   │   ├── graph.cpp
+│   │   ├── graph.hpp
+│   │   └── node.hpp
+│   ├── nodes/
+│   │   ├── asset_node.cpp
+│   │   ├── asset_node.hpp
+│   │   ├── basic_nodes.cpp
+│   │   ├── basic_nodes.hpp
+│   │   ├── checker_texture.cpp
+│   │   ├── checker_texture.hpp
+│   │   └── node_factory.hpp
+│   ├── threading/
+│   │   └── thread_pool.hpp
+│   ├── types/
+│   │   └── type_system.hpp
+│   ├── arxglue.hpp
+│   └── main.cpp
+└── CMakeLists.txt

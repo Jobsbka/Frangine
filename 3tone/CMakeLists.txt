@@ -11,10 +11,11 @@ add_executable(3tone
     src/core/executor.cpp
     src/core/baking.cpp
     src/assets/asset_manager.cpp
-    src/assets/stb_impl.cpp           # <-- новый файл
+    src/assets/stb_impl.cpp
     src/nodes/basic_nodes.cpp
     src/nodes/asset_node.cpp
     src/nodes/checker_texture.cpp
+    src/nodes/convert_node.cpp
 )
 
 target_include_directories(3tone PRIVATE src)

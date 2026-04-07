@@ -90,6 +90,12 @@ public:
         m_converters[{from, to}] = std::move(conv);
     }
 
+    std::type_index getStdTypeIndex(TypeId id) const {
+        auto it = m_typeInfo.find(id);
+        if (it != m_typeInfo.end()) return it->second.stdType;
+        return typeid(void);
+    }
+
 private:
     struct TypeInfo {
         std::type_index stdType;

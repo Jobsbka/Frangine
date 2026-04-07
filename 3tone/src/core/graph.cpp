@@ -1,5 +1,8 @@
+// src/core/graph.cpp
 #include "graph.hpp"
 #include "../nodes/node_factory.hpp"
+#include "../nodes/convert_node.hpp"
+#include "../types/type_system.hpp"
 #include <queue>
 #include <algorithm>
 #include <stdexcept>
@@ -36,14 +39,75 @@ INode* Graph::getNode(NodeId id) {
     return m_nodes[it->second].get();
 }
 
+Graph::ConnectionPlan Graph::prepareConnection(NodeId srcNode, int srcPort, NodeId dstNode, int dstPort) {
+    ConnectionPlan plan;
+    plan.valid = false;
+
+    INode* src = getNode(srcNode);
+    INode* dst = getNode(dstNode);
+    if (!src || !dst) return plan;
+
+    std::type_index srcType = src->getOutputPortType(srcPort);
+    std::type_index dstType = dst->getInputPortType(dstPort);
+
+    // Если типы не указаны, разрешаем прямое соединение
+    if (srcType == typeid(void) || dstType == typeid(void)) {
+        plan.connections.push_back({srcNode, srcPort, dstNode, dstPort});
+        plan.valid = true;
+        return plan;
+    }
+
+    if (srcType == dstType) {
+        plan.connections.push_back({srcNode, srcPort, dstNode, dstPort});
+        plan.valid = true;
+        return plan;
+    }
+
+    TypeId srcId = TypeSystem::instance().getTypeId(srcType);
+    TypeId dstId = TypeSystem::instance().getTypeId(dstType);
+    if (srcId == TypeId::Unknown || dstId == TypeId::Unknown) {
+        return plan; // неизвестные типы
+    }
+
+    if (!TypeSystem::instance().canConvert(srcId, dstId)) {
+        return plan; // конвертация невозможна
+    }
+
+    // Создаём узел-конвертер и добавляем его в граф
+    auto converter = std::make_unique<ConvertNode>(srcId, dstId);
+    NodeId converterId = addNode(std::move(converter));
+    plan.createdConverterId = converterId;
+
+    // Формируем два соединения
+    plan.connections.push_back({srcNode, srcPort, converterId, 0});
+    plan.connections.push_back({converterId, 0, dstNode, dstPort});
+    plan.valid = true;
+    return plan;
+}
+
 void Graph::addConnection(const Connection& conn) {
-    if (!getNode(conn.srcNode) || !getNode(conn.dstNode)) return;
-    m_connections.push_back(conn);
+    // 1. Подготавливаем соединения (возможно, с конвертером)
+    ConnectionPlan plan = prepareConnection(conn.srcNode, conn.srcPort, conn.dstNode, conn.dstPort);
+    if (!plan.valid) {
+        throw std::runtime_error("Incompatible port types and no conversion available");
+    }
+
+    // 2. Временно добавляем соединения
+    size_t oldConnCount = m_connections.size();
+    m_connections.insert(m_connections.end(), plan.connections.begin(), plan.connections.end());
     m_adjValid = false;
+
+    // 3. Проверяем наличие циклов
     try {
         topologicalSort();
     } catch (const std::runtime_error&) {
-        m_connections.pop_back();
+        // Откат: удаляем добавленные соединения
+        m_connections.resize(oldConnCount);
+        // Если был создан конвертер, удаляем его
+        if (plan.createdConverterId != 0) {
+            removeNode(plan.createdConverterId);
+        }
+        m_adjValid = false;
         throw std::runtime_error("Connection would create a cycle");
     }
 }

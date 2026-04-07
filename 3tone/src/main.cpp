@@ -87,6 +87,51 @@ int main() {
         return 1;
     }
 
+    std::cout << "\n=== Type Conversion Test ===" << std::endl;
+    Graph graph2;
+
+    // Узел, выдающий целое число 42
+    auto constInt = std::make_unique<ConstantNode<int>>(42);
+    NodeId constId = graph2.addNode(std::move(constInt));
+
+    // Узел-потребитель, ожидающий float
+    auto consumer = std::make_unique<FloatConsumerNode>();
+    NodeId consumerId = graph2.addNode(std::move(consumer));
+
+    // Соединяем int -> float (автоматически вставится ConvertNode)
+    Connection conn;
+    conn.srcNode = constId;
+    conn.srcPort = 0;
+    conn.dstNode = consumerId;
+    conn.dstPort = 0;
+
+    try {
+        graph2.addConnection(conn);
+        std::cout << "Connection added successfully (converter inserted automatically)." << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to add connection: " << e.what() << std::endl;
+        return 1;
+    }
+
+    // Проверяем, что в графе теперь три узла
+    std::cout << "Graph2 node count: " << graph2.getNodes().size() << std::endl;
+    for (const auto& nodePtr : graph2.getNodes()) {
+        std::cout << "  Node: " << nodePtr->getMetadata().name << std::endl;
+    }
+
+    // Выполняем граф
+    Executor exec2(1);
+    Context ctx3;
+    exec2.execute(graph2, ctx3, {consumerId});
+
+    // Проверяем результат (должен быть float 42.0f)
+    if (ctx3.output.has_value() && ctx3.output.type() == typeid(float)) {
+        float result = std::any_cast<float>(ctx3.output);
+        std::cout << "Final output: " << result << std::endl;
+    } else {
+        std::cerr << "Unexpected output type!" << std::endl;
+    }
+
     std::cout << "\nPress Enter to exit..." << std::endl;
     std::cin.get();
     return 0;
