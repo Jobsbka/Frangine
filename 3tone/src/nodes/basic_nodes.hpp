@@ -6,7 +6,6 @@
 
 namespace arxglue {
 
-// Функция для регистрации всех базовых узлов в фабрике
 void registerBasicNodes();
 
 template<typename T>
@@ -19,7 +18,10 @@ public:
     }
 
     ComponentMetadata getMetadata() const override {
-        return {"Constant" + std::string(typeid(T).name()), {}, {{"out", typeid(T)}}, true, false};
+        return {"Constant" + std::string(typeid(T).name()),
+                {}, // нет входов
+                {{"out", typeid(T)}},
+                true, false};
     }
 
     void setParameter(const std::string& name, const std::any& value) override {
@@ -56,7 +58,10 @@ class AddNode : public INode {
 public:
     void execute(Context& ctx) override;
     ComponentMetadata getMetadata() const override {
-        return {"Add", {{"a", typeid(int)}, {"b", typeid(int)}}, {{"out", typeid(int)}}, true, false};
+        return {"Add",
+                {{"a", typeid(int)}, {"b", typeid(int)}},
+                {{"out", typeid(int)}},
+                true, false};
     }
     void setParameter(const std::string&, const std::any&) override {}
     std::any getParameter(const std::string&) const override { return {}; }
@@ -69,7 +74,10 @@ public:
     LoadTextureNode(const std::string& path = "") : m_path(path) {}
     void execute(Context& ctx) override;
     ComponentMetadata getMetadata() const override {
-        return {"LoadTexture", {}, {{"texture", typeid(std::shared_ptr<TextureAsset>)}}, false, false};
+        return {"LoadTexture",
+                {},
+                {{"texture", typeid(std::shared_ptr<TextureAsset>)}},
+                false, false};
     }
     void setParameter(const std::string& name, const std::any& value) override {
         if (name == "path") m_path = std::any_cast<std::string>(value);
@@ -95,7 +103,10 @@ public:
     PerlinNoiseNode(float scale = 0.01f, int octaves = 4) : m_scale(scale), m_octaves(octaves) {}
     void execute(Context& ctx) override;
     ComponentMetadata getMetadata() const override {
-        return {"PerlinNoise", {}, {{"value", typeid(float)}}, false, false};
+        return {"PerlinNoise",
+                {},
+                {{"value", typeid(float)}},
+                false, false}; // volatile (случайное значение)
     }
     void setParameter(const std::string& name, const std::any& value) override {
         if (name == "scale") m_scale = std::any_cast<float>(value);
