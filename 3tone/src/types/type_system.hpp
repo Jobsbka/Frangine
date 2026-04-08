@@ -1,3 +1,4 @@
+// src/types/type_system.hpp
 #pragma once
 #include <any>
 #include <typeindex>
@@ -46,7 +47,6 @@ public:
     }
 
     void registerType(TypeId id, const std::type_index& stdType, TypeId parent = TypeId::Unknown) {
-        // Используем emplace вместо operator[] (operator[] требует default-constructible)
         m_typeInfo.emplace(id, TypeInfo(stdType, parent));
         m_typeToId[stdType] = id;
     }
@@ -105,11 +105,29 @@ public:
         return typeid(void);
     }
 
+    static bool compareAny(const std::any& a, const std::any& b) {
+        if (!a.has_value() && !b.has_value()) return true;
+        if (!a.has_value() || !b.has_value()) return false;
+        if (std::type_index(a.type()) != std::type_index(b.type())) return false;
+        const std::type_info& ti = a.type();
+        if (ti == typeid(int)) {
+            return std::any_cast<int>(a) == std::any_cast<int>(b);
+        } else if (ti == typeid(float)) {
+            return std::any_cast<float>(a) == std::any_cast<float>(b);
+        } else if (ti == typeid(std::string)) {
+            return std::any_cast<std::string>(a) == std::any_cast<std::string>(b);
+        } else if (ti == typeid(bool)) {
+            return std::any_cast<bool>(a) == std::any_cast<bool>(b);
+        }
+        return false; // для сложных типов считаем разными
+    }
+
+
+
 private:
     struct TypeInfo {
         std::type_index stdType;
         TypeId parent;
-        // Конструктор по умолчанию не нужен и не будет сгенерирован (std::type_index не default-constructible)
         TypeInfo(const std::type_index& t, TypeId p) : stdType(t), parent(p) {}
     };
 

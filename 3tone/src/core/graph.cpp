@@ -5,6 +5,7 @@
 #include "../types/type_system.hpp"
 #include <queue>
 #include <algorithm>
+#include <unordered_set> 
 #include <stdexcept>
 
 namespace arxglue {
@@ -50,7 +51,6 @@ Graph::ConnectionPlan Graph::prepareConnection(NodeId srcNode, int srcPort, Node
     std::type_index srcType = src->getOutputPortType(srcPort);
     std::type_index dstType = dst->getInputPortType(dstPort);
 
-    // Если типы не указаны, разрешаем прямое соединение
     if (srcType == typeid(void) || dstType == typeid(void)) {
         plan.connections.push_back({srcNode, srcPort, dstNode, dstPort});
         plan.valid = true;
@@ -66,19 +66,16 @@ Graph::ConnectionPlan Graph::prepareConnection(NodeId srcNode, int srcPort, Node
     TypeId srcId = TypeSystem::instance().getTypeId(srcType);
     TypeId dstId = TypeSystem::instance().getTypeId(dstType);
     if (srcId == TypeId::Unknown || dstId == TypeId::Unknown) {
-        return plan; // неизвестные типы
+        return plan;
     }
 
     if (!TypeSystem::instance().canConvert(srcId, dstId)) {
-        return plan; // конвертация невозможна
+        return plan;
     }
 
-    // Создаём узел-конвертер и добавляем его в граф
     auto converter = std::make_unique<ConvertNode>(srcId, dstId);
     NodeId converterId = addNode(std::move(converter));
     plan.createdConverterId = converterId;
-
-    // Формируем два соединения
     plan.connections.push_back({srcNode, srcPort, converterId, 0});
     plan.connections.push_back({converterId, 0, dstNode, dstPort});
     plan.valid = true;
@@ -86,24 +83,19 @@ Graph::ConnectionPlan Graph::prepareConnection(NodeId srcNode, int srcPort, Node
 }
 
 void Graph::addConnection(const Connection& conn) {
-    // 1. Подготавливаем соединения (возможно, с конвертером)
     ConnectionPlan plan = prepareConnection(conn.srcNode, conn.srcPort, conn.dstNode, conn.dstPort);
     if (!plan.valid) {
         throw std::runtime_error("Incompatible port types and no conversion available");
     }
 
-    // 2. Временно добавляем соединения
     size_t oldConnCount = m_connections.size();
     m_connections.insert(m_connections.end(), plan.connections.begin(), plan.connections.end());
     m_adjValid = false;
 
-    // 3. Проверяем наличие циклов
     try {
         topologicalSort();
     } catch (const std::runtime_error&) {
-        // Откат: удаляем добавленные соединения
         m_connections.resize(oldConnCount);
-        // Если был создан конвертер, удаляем его
         if (plan.createdConverterId != 0) {
             removeNode(plan.createdConverterId);
         }
@@ -142,12 +134,17 @@ std::vector<NodeId> Graph::getDependents(NodeId id) const {
 
 void Graph::invalidateSubgraph(NodeId root) {
     std::queue<NodeId> q;
+    std::unordered_set<NodeId> visited;
     q.push(root);
     while (!q.empty()) {
         NodeId id = q.front(); q.pop();
+        if (visited.count(id)) continue;
+        visited.insert(id);
         INode* node = getNode(id);
-        if (node && node->isDirty()) continue;
-        if (node) node->setDirty(true);
+        if (node) {
+            node->setDirty(true);
+            node->clearLastInputs();   
+        }
         for (NodeId dep : getDependents(id)) {
             q.push(dep);
         }

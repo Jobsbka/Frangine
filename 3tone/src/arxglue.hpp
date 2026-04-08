@@ -1,3 +1,4 @@
+// src/arxglue.hpp
 #pragma once
 
 #include <any>
@@ -8,22 +9,39 @@
 #include <memory>
 #include <string>
 #include <typeindex>
+#include <shared_mutex>
 
 namespace arxglue {
 
 struct Context {
     std::any input;
     std::any output;
+    // state теперь защищён мьютексом для потокобезопасного доступа
     std::unordered_map<std::string, std::any> state;
+    mutable std::shared_mutex stateMutex;
 
+    // Потокобезопасное получение значения (копия)
     template<typename T>
-    T& getState(const std::string& key) {
-        return std::any_cast<T&>(state[key]);
+    T getState(const std::string& key) const {
+        std::shared_lock lock(stateMutex);
+        auto it = state.find(key);
+        if (it != state.end()) {
+            return std::any_cast<T>(it->second);
+        }
+        return T{};
     }
 
+    // Потокобезопасная установка значения
     template<typename T>
     void setState(const std::string& key, T&& value) {
+        std::unique_lock lock(stateMutex);
         state[key] = std::forward<T>(value);
+    }
+
+    // Проверка наличия ключа
+    bool hasState(const std::string& key) const {
+        std::shared_lock lock(stateMutex);
+        return state.find(key) != state.end();
     }
 };
 

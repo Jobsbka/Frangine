@@ -1,4 +1,3 @@
-// src/nodes/basic_nodes.cpp
 #include "basic_nodes.hpp"
 #include "node_factory.hpp"
 #include "../assets/asset_manager.hpp"
@@ -42,6 +41,7 @@ void registerBasicNodes() {
     factory.registerNode("AssetNode", []() { return std::make_unique<AssetNode>(); });
     factory.registerNode("ConvertNode", []() { return std::make_unique<ConvertNode>(); });
     factory.registerNode("FloatConsumer", []() { return std::make_unique<FloatConsumerNode>(); });
+    factory.registerNode("SlowNode", []() { return std::make_unique<SlowNode>(); });   // <-- новая строка
 }
 
 } // namespace arxglue

@@ -3,6 +3,9 @@
 #include "../assets/asset_manager.hpp"
 #include <string>
 #include <iostream>
+#include <thread>
+#include <mutex>
+#include <chrono>
 
 namespace arxglue {
 
@@ -25,7 +28,10 @@ public:
     }
 
     void setParameter(const std::string& name, const std::any& value) override {
-        if (name == "value") m_value = std::any_cast<T>(value);
+        if (name == "value") {
+            m_value = std::any_cast<T>(value);
+            setDirty(true); // <-- добавить
+        }
     }
 
     std::any getParameter(const std::string& name) const override {
@@ -143,7 +149,8 @@ public:
     void execute(Context& ctx) override {
         float val = std::any_cast<float>(getInputValue(ctx, 0));
         setOutputValue(ctx, 0, val);
-        // Для демонстрации выведем в консоль
+        static std::mutex coutMutex;
+        std::lock_guard<std::mutex> lock(coutMutex);
         std::cout << "[FloatConsumer] Received: " << val << std::endl;
     }
 
@@ -158,6 +165,56 @@ public:
     std::any getParameter(const std::string&) const override { return {}; }
     void serialize(nlohmann::json& j) const override { j["type"] = "FloatConsumer"; }
     void deserialize(const nlohmann::json&) override {}
+};
+
+class SlowNode : public INode {
+public:
+    SlowNode() : m_delayMs(100) {}
+    explicit SlowNode(int delayMs) : m_delayMs(delayMs) {}
+
+    void execute(Context& ctx) override {
+        // Искусственная задержка для демонстрации параллелизма
+        std::this_thread::sleep_for(std::chrono::milliseconds(m_delayMs));
+
+        // Ожидаем на входе целое число, на выходе возвращаем его же
+        int val = std::any_cast<int>(getInputValue(ctx, 0));
+        setOutputValue(ctx, 0, val);
+    }
+
+    ComponentMetadata getMetadata() const override {
+        return {
+            "SlowNode",
+            {{"in", typeid(int), true}},
+            {{"out", typeid(int)}},
+            true,   // pure (результат зависит только от входа)
+            false   // не volatile
+        };
+    }
+
+    void setParameter(const std::string& name, const std::any& value) override {
+        if (name == "delay") {
+            m_delayMs = std::any_cast<int>(value);
+        }
+    }
+
+    std::any getParameter(const std::string& name) const override {
+        if (name == "delay") return m_delayMs;
+        return {};
+    }
+
+    void serialize(nlohmann::json& j) const override {
+        j["type"] = "SlowNode";
+        j["params"]["delay"] = m_delayMs;
+    }
+
+    void deserialize(const nlohmann::json& j) override {
+        if (j.contains("params") && j["params"].contains("delay")) {
+            m_delayMs = j["params"]["delay"].get<int>();
+        }
+    }
+
+private:
+    int m_delayMs;
 };
 
 } // namespace arxglue

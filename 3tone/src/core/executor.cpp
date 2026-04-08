@@ -1,7 +1,9 @@
+// src/core/executor.cpp
 #include "executor.hpp"
 #include <unordered_set>
 #include <queue>
 #include <chrono>
+#include <iostream>
 
 namespace arxglue {
 
@@ -28,11 +30,14 @@ void Executor::execute(Graph& graph, Context& ctx, const std::vector<NodeId>& ro
     if (!rootNodes.empty()) {
         std::unordered_set<NodeId> reachable;
         std::queue<NodeId> q;
-        for (NodeId r : rootNodes) { q.push(r); reachable.insert(r); }
+        for (NodeId r : rootNodes) {
+            q.push(r);
+            reachable.insert(r);
+        }
         while (!q.empty()) {
             NodeId cur = q.front(); q.pop();
             for (NodeId dep : graph.getDependencies(cur)) {
-                if (!reachable.count(dep)) {
+                if (reachable.find(dep) == reachable.end()) {
                     reachable.insert(dep);
                     q.push(dep);
                 }
@@ -40,76 +45,84 @@ void Executor::execute(Graph& graph, Context& ctx, const std::vector<NodeId>& ro
         }
         std::vector<NodeId> filtered;
         for (NodeId n : allNodes) {
-            if (reachable.count(n)) filtered.push_back(n);
+            if (reachable.count(n)) {
+                filtered.push_back(n);
+            }
         }
-        allNodes = filtered;
+        allNodes = std::move(filtered);
     }
 
-    runTopologically(allNodes);
-}
-
-void Executor::runTopologically(const std::vector<NodeId>& order) {
-    // Строим карту зависимостей (кто от кого зависит)
+    // Строим карты зависимостей
     std::unordered_map<NodeId, int> depCount;
     std::unordered_map<NodeId, std::vector<NodeId>> dependents;
 
-    for (NodeId id : order) {
+    for (NodeId id : allNodes) {
         depCount[id] = 0;
-        dependents[id].clear();
+        dependents[id] = {};
     }
-    for (NodeId id : order) {
-        for (NodeId dep : m_graph->getDependencies(id)) {
-            if (depCount.count(dep)) {
+
+    for (NodeId id : allNodes) {
+        for (NodeId dep : graph.getDependencies(id)) {
+            if (depCount.find(dep) != depCount.end()) {
                 depCount[id]++;
                 dependents[dep].push_back(id);
             }
         }
     }
 
-    // Очередь готовых к выполнению узлов (зависимостей нет)
-    std::queue<NodeId> ready;
-    for (auto& [id, cnt] : depCount) {
-        if (cnt == 0) ready.push(id);
+    // Очередь готовых узлов
+    std::queue<NodeId> readyQueue;
+    std::mutex queueMutex;
+    std::condition_variable cv;
+    std::atomic<int> tasksRemaining(static_cast<int>(allNodes.size()));
+
+    for (const auto& pair : depCount) {
+        if (pair.second == 0) {
+            readyQueue.push(pair.first);
+        }
     }
 
-    std::atomic<int> tasksRemaining = static_cast<int>(order.size());
-    std::mutex queueMutex;
-    std::mutex ctxMutex; // для потокобезопасного доступа к m_ctx->state (если нужно)
+    // Обработчик одного узла (вызывается в пуле)
+    auto processNode = [this, &depCount, &dependents, &readyQueue, &queueMutex, &cv, &tasksRemaining](NodeId id) {
+        try {
+            executeNode(id);
+        } catch (const std::exception& e) {
+            std::cerr << "Exception in node " << id << ": " << e.what() << std::endl;
+        }
 
-    // Основной цикл: пока есть задачи или узлы в очереди
-    while (!ready.empty() || tasksRemaining > 0) {
-        std::vector<NodeId> batch;
+        int remaining = --tasksRemaining;
+
         {
             std::lock_guard<std::mutex> lock(queueMutex);
-            while (!ready.empty()) {
-                batch.push_back(ready.front());
-                ready.pop();
+            for (NodeId child : dependents[id]) {
+                int& cnt = depCount[child];
+                if (--cnt == 0) {
+                    readyQueue.push(child);
+                }
             }
         }
-        if (batch.empty()) {
-            std::this_thread::sleep_for(std::chrono::microseconds(10));
-            continue;
+        cv.notify_one();
+
+        if (remaining == 0) {
+            cv.notify_all();
         }
+    };
 
-        std::vector<std::future<void>> futures;
-        for (NodeId id : batch) {
-            futures.push_back(m_pool->enqueue([this, id, &depCount, &dependents, &ready, &tasksRemaining, &queueMutex, &ctxMutex]() {
-                // Выполняем узел
-                executeNode(id);
-
-                // Уменьшаем счётчик оставшихся задач
-                tasksRemaining--;
-
-                // Для каждого потомка уменьшаем счётчик зависимостей; если стал 0 – добавляем в ready
-                for (NodeId dep : dependents[id]) {
-                    if (--depCount[dep] == 0) {
-                        std::lock_guard<std::mutex> lock(queueMutex);
-                        ready.push(dep);
-                    }
-                }
-            }));
+    // Диспетчеризация
+    {
+        std::unique_lock<std::mutex> lock(queueMutex);
+        while (tasksRemaining > 0) {
+            while (!readyQueue.empty()) {
+                NodeId id = readyQueue.front();
+                readyQueue.pop();
+                m_pool->enqueue([processNode, id]() {
+                    processNode(id);
+                });
+            }
+            if (tasksRemaining > 0) {
+                cv.wait(lock);
+            }
         }
-        for (auto& f : futures) f.get();
     }
 }
 
@@ -117,50 +130,46 @@ void Executor::executeNode(NodeId id) {
     INode* node = m_graph->getNode(id);
     if (!node) return;
 
-    // Собираем входные значения из соединений
-    Context localCtx;
-    for (const auto& conn : m_graph->getConnections()) {
-        if (conn.dstNode == id) {
-            INode* srcNode = m_graph->getNode(conn.srcNode);
-            if (srcNode) {
-                std::any value = srcNode->getCachedOutput();
-                std::string inKey = "in_" + std::to_string(id) + "_" + std::to_string(static_cast<int>(conn.dstPort));
-                localCtx.state[inKey] = value;
+    // 1. Сбор входных значений: копируем из кэшей предшественников в state под защитой unique_lock
+    {
+        std::unique_lock lock(m_ctx->stateMutex);
+        for (const auto& conn : m_graph->getConnections()) {
+            if (conn.dstNode == id) {
+                INode* srcNode = m_graph->getNode(conn.srcNode);
+                if (srcNode) {
+                    std::any value = srcNode->getCachedOutput();
+                    if (value.has_value()) {
+                        std::string inKey = "in_" + std::to_string(id) + "_" + std::to_string(static_cast<int>(conn.dstPort));
+                        m_ctx->state[inKey] = value;
+                    }
+                }
             }
         }
     }
 
-    // Проверяем, нужно ли пересчитывать узел
+    // 2. Проверка необходимости выполнения (чтение state происходит внутри areInputsChanged, который теперь использует shared_lock)
     bool needExecute = true;
     const auto& metadata = node->getMetadata();
-    if (!metadata.volatile_ && !node->isDirty()) {
-        // Если не volatile и не грязный, проверяем входы и параметры
-        if (!node->areInputsChanged(localCtx) && !node->areParametersChanged()) {
-            needExecute = false; // входы и параметры не изменились – используем кэш
+    std::any cached = node->getCachedOutput();
+    if (!metadata.volatile_ && !node->isDirty() && cached.has_value()) {
+        if (!node->areInputsChanged(*m_ctx) && !node->areParametersChanged()) {
+            needExecute = false;
         }
     }
 
+    // 3. Выполнение или восстановление
     if (needExecute) {
-        node->execute(localCtx);
-        node->setCachedOutput(localCtx.output);
+        node->execute(*m_ctx); // внутри узлы используют getInputValue/setOutputValue с блокировками
+        node->setCachedOutput(m_ctx->output);
         node->setDirty(false);
-        node->updateLastInputs(localCtx);
+        node->updateLastInputs(*m_ctx);
     } else {
-        // Восстанавливаем выход из кэша (уже есть в node->getCachedOutput)
-        // Но также нужно записать выход в контекст, чтобы последующие узлы получили значение
-        localCtx.output = node->getCachedOutput();
+        m_ctx->output = cached;
     }
 
-    // Передаём выходные значения в глобальный контекст (для отладки и дальнейших соединений)
-    for (const auto& conn : m_graph->getConnections()) {
-        if (conn.srcNode == id) {
-            std::string outKey = "out_" + std::to_string(id) + "_" + std::to_string(static_cast<int>(conn.srcPort));
-            m_ctx->state[outKey] = localCtx.output;
-        }
-    }
-
-    // Сохраняем конечный выход графа (если этот узел – последний)
-    m_ctx->output = localCtx.output;
+    // 4. Сохранение выходов (уже делается внутри setOutputValue, но на всякий случай можно оставить для out_ ключей)
+    // Фактически узлы сами вызывают setOutputValue, который пишет out_ ключи. 
+    // Дополнительно ничего не нужно.
 }
 
 void Executor::invalidate(NodeId id) {

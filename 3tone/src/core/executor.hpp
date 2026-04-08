@@ -1,8 +1,11 @@
+// src/core/executor.hpp
 #pragma once
 #include "graph.hpp"
 #include "../threading/thread_pool.hpp"
 #include <atomic>
 #include <memory>
+#include <mutex>
+#include <condition_variable>
 
 namespace arxglue {
 
@@ -18,8 +21,8 @@ private:
     std::unique_ptr<ThreadPool> m_pool;
     Graph* m_graph = nullptr;
     Context* m_ctx = nullptr;
+    std::mutex m_stateMutex;          // защита доступа к m_ctx->state
 
-    void runTopologically(const std::vector<NodeId>& order);
     void executeNode(NodeId id);
 };
 
