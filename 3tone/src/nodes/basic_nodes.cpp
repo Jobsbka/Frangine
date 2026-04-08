@@ -1,3 +1,4 @@
+// src/nodes/basic_nodes.cpp
 #include "basic_nodes.hpp"
 #include "node_factory.hpp"
 #include "../assets/asset_manager.hpp"
@@ -5,6 +6,7 @@
 #include "checker_texture.hpp"
 #include "asset_node.hpp"
 #include "convert_node.hpp"
+#include "text_texture_node.hpp"   
 
 namespace arxglue {
 
@@ -41,7 +43,10 @@ void registerBasicNodes() {
     factory.registerNode("AssetNode", []() { return std::make_unique<AssetNode>(); });
     factory.registerNode("ConvertNode", []() { return std::make_unique<ConvertNode>(); });
     factory.registerNode("FloatConsumer", []() { return std::make_unique<FloatConsumerNode>(); });
-    factory.registerNode("SlowNode", []() { return std::make_unique<SlowNode>(); });   // <-- новая строка
+    factory.registerNode("SlowNode", []() { return std::make_unique<SlowNode>(); });
+    factory.registerNode("TextTexture", []() { return std::make_unique<TextTextureNode>(); });
+    // Узел YToColorNode зарегистрирован в Game.cpp через статическую переменную,
+    // поэтому здесь его не регистрируем.
 }
 
 } // namespace arxglue

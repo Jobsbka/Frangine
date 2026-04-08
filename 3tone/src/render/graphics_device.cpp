@@ -1,3 +1,4 @@
+// src/render/graphics_device.cpp
 #include "graphics_device.hpp"
 #include "texture.hpp"
 #include "mesh.hpp"
@@ -20,19 +21,14 @@ bool GraphicsDevice::initialize(GLFWwindow* window) {
     m_window = window;
     makeCurrent();
 
-    // Загрузка OpenGL через glad
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
         throw std::runtime_error("Failed to initialize GLAD");
     }
 
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
-    
-    // Временно отключаем отсечение граней для отладки
-    // glEnable(GL_CULL_FACE);
-    // glCullFace(GL_BACK);
-    
-    // Для проверки winding order можно включить и посмотреть, но лучше отключить
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     m_initialized = true;
     return true;
