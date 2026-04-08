@@ -29,7 +29,7 @@
 *.dSYM/
 *.idb
 *.pdb
-/build/
+3tone/build/
 
 ### Windows
 # Windows thumbnail cache files
