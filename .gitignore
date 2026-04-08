@@ -29,6 +29,7 @@
 *.dSYM/
 *.idb
 *.pdb
+/build/
 
 ### Windows
 # Windows thumbnail cache files
