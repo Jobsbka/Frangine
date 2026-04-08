@@ -19,6 +19,7 @@ add_executable(3tone
     src/main.cpp
     src/glad.c                         # OpenGL loader
     src/core/graph.cpp
+    src/nodes/text_texture_node.cpp
     src/core/executor.cpp
     src/core/baking.cpp
     src/assets/asset_manager.cpp
@@ -37,6 +38,7 @@ add_executable(3tone
     src/render/scene.cpp
     src/render/command_buffer.cpp
     src/render/render_target.cpp
+    src/game/Game.cpp
 )
 
 # Директории с заголовочными файлами
