@@ -1,6 +1,2038 @@
-Чат разработки: https://chat.deepseek.com/share/y3an7q6x26zh3vyk09
+< | source headers | >
 
-< | documentation | > 
+===
+.\3tone_heads.txt
+===
+
+
+===
+.\CMakeLists.txt
+===
+cmake_minimum_required(VERSION 3.16)
+project(3tone VERSION 0.4.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Загрузка GLFW через FetchContent (требуется для рендера)
+include(FetchContent)
+FetchContent_Declare(
+    glfw
+    GIT_REPOSITORY https://github.com/glfw/glfw.git
+    GIT_TAG 3.3.8
+)
+FetchContent_MakeAvailable(glfw)
+
+# Исполняемый файл со всеми исходниками
+add_executable(3tone
+    src/main.cpp
+    src/glad.c                         # OpenGL loader
+    src/core/graph.cpp
+    src/nodes/text_texture_node.cpp
+    src/core/executor.cpp
+    src/core/baking.cpp
+    src/assets/asset_manager.cpp
+    src/assets/stb_impl.cpp
+    src/nodes/basic_nodes.cpp
+    src/nodes/asset_node.cpp
+    src/nodes/checker_texture.cpp
+    src/nodes/convert_node.cpp
+    src/nodes/render_nodes.cpp
+    src/render/graphics_device.cpp
+    src/render/texture.cpp
+    src/render/mesh.cpp
+    src/render/shader.cpp
+    src/render/material.cpp
+    src/render/camera.cpp
+    src/render/scene.cpp
+    src/render/command_buffer.cpp
+    src/render/render_target.cpp
+    src/game/Game.cpp
+)
+
+# Директории с заголовочными файлами
+target_include_directories(3tone PRIVATE src)
+target_include_directories(3tone PRIVATE include)   # nlohmann/json, glad, KHR
+
+# Опции компиляции
+if(MSVC)
+    target_compile_options(3tone PRIVATE /W4 /EHsc)
+    target_compile_definitions(3tone PRIVATE _CRT_SECURE_NO_WARNINGS)
+else()
+    target_compile_options(3tone PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+# Линковка с потоками и GLFW (OpenGL подтягивается через GLFW)
+find_package(Threads REQUIRED)
+target_link_libraries(3tone Threads::Threads glfw)
+
+# Для Windows: автоматическое копирование DLL GLFW (если используется динамическая сборка)
+if(WIN32 AND BUILD_SHARED_LIBS)
+    add_custom_command(TARGET 3tone POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:glfw>
+        $<TARGET_FILE_DIR:3tone>
+    )
+endif()
+
+===
+.\src\arxglue.hpp
+===
+// src/arxglue.hpp
+#pragma once
+
+#include <any>
+#include <functional>
+#include <unordered_map>
+#include <vector>
+#include <optional>
+#include <memory>
+#include <string>
+#include <typeindex>
+#include <shared_mutex>
+
+namespace arxglue {
+
+struct Context {
+    std::any input;
+    std::any output;
+    // state теперь защищён мьютексом для потокобезопасного доступа
+    std::unordered_map<std::string, std::any> state;
+    mutable std::shared_mutex stateMutex;
+
+    // Потокобезопасное получение значения (копия)
+    template<typename T>
+    T getState(const std::string& key) const {
+        std::shared_lock lock(stateMutex);
+        auto it = state.find(key);
+        if (it != state.end()) {
+            return std::any_cast<T>(it->second);
+        }
+        return T{};
+    }
+
+    // Потокобезопасная установка значения
+    template<typename T>
+    void setState(const std::string& key, T&& value) {
+        std::unique_lock lock(stateMutex);
+        state[key] = std::forward<T>(value);
+    }
+
+    // Проверка наличия ключа
+    bool hasState(const std::string& key) const {
+        std::shared_lock lock(stateMutex);
+        return state.find(key) != state.end();
+    }
+};
+
+using Component = std::function<void(Context&)>;
+
+struct MultiConnection {
+    Component source;
+    std::vector<Component> targets;
+    std::optional<std::function<void(Context&)>> transformer;
+};
+
+template<typename... Targets>
+MultiConnection connect(Component source, Targets... targets) {
+    return MultiConnection{source, {targets...}, std::nullopt};
+}
+
+template<typename... Targets>
+MultiConnection connect(Component source, std::function<void(Context&)> transformer, Targets... targets) {
+    return MultiConnection{source, {targets...}, transformer};
+}
+
+using NodeId = uint32_t;
+
+struct PortInfo {
+    std::string name;
+    std::type_index type;
+    bool required = true;
+};
+
+struct ComponentMetadata {
+    std::string name;
+    std::vector<PortInfo> inputs;
+    std::vector<PortInfo> outputs;
+    bool pure = false;
+    bool volatile_ = false;
+    bool threadSafe = false;
+};
+
+} // namespace arxglue
+
+===
+.\src\assets\asset_manager.hpp
+===
+#pragma once
+#include <any>
+#include <string>
+#include <unordered_map>
+#include <memory>
+#include <mutex>
+#include <fstream>
+#include <vector>
+#include <cstdint>
+#include <algorithm>
+
+// Заголовки stb (реализация будет в отдельном .cpp)
+#include "stb_image.h"
+#include "stb_image_write.h"
+
+namespace arxglue {
+
+class Asset {
+public:
+    virtual ~Asset() = default;
+    virtual std::type_index getType() const = 0;
+    virtual void writeToFile(const std::string& path) const = 0;
+};
+
+class TextureAsset : public Asset {
+public:
+    TextureAsset(int w, int h, const std::vector<uint8_t>& data)
+        : width(w), height(h), pixels(data) {}
+
+    std::type_index getType() const override { return typeid(TextureAsset); }
+
+    void writeToFile(const std::string& path) const override {
+        std::string ext;
+        size_t dotPos = path.find_last_of('.');
+        if (dotPos != std::string::npos) {
+            ext = path.substr(dotPos);
+        }
+
+        if (ext == ".png") {
+            stbi_write_png(path.c_str(), width, height, 4, pixels.data(), width * 4);
+        } else {
+            std::ofstream f(path, std::ios::binary);
+            int32_t w = width, h = height;
+            f.write(reinterpret_cast<const char*>(&w), sizeof(w));
+            f.write(reinterpret_cast<const char*>(&h), sizeof(h));
+            uint32_t size = static_cast<uint32_t>(pixels.size());
+            f.write(reinterpret_cast<const char*>(&size), sizeof(size));
+            f.write(reinterpret_cast<const char*>(pixels.data()), pixels.size());
+        }
+    }
+
+    static std::shared_ptr<TextureAsset> readFromFile(const std::string& path) {
+        std::string ext;
+        size_t dotPos = path.find_last_of('.');
+        if (dotPos != std::string::npos) {
+            ext = path.substr(dotPos);
+        }
+
+        if (ext == ".png") {
+            int w, h, comp;
+            unsigned char* data = stbi_load(path.c_str(), &w, &h, &comp, 4);
+            if (!data) return nullptr;
+            std::vector<uint8_t> pixels(data, data + w * h * 4);
+            stbi_image_free(data);
+            return std::make_shared<TextureAsset>(w, h, pixels);
+        } else {
+            std::ifstream f(path, std::ios::binary);
+            if (!f) return nullptr;
+            int32_t w, h;
+            f.read(reinterpret_cast<char*>(&w), sizeof(w));
+            f.read(reinterpret_cast<char*>(&h), sizeof(h));
+            uint32_t size;
+            f.read(reinterpret_cast<char*>(&size), sizeof(size));
+            std::vector<uint8_t> pixels(size);
+            f.read(reinterpret_cast<char*>(pixels.data()), size);
+            return std::make_shared<TextureAsset>(w, h, pixels);
+        }
+    }
+
+    int width, height;
+    std::vector<uint8_t> pixels;
+};
+
+class MeshAsset : public Asset {
+public:
+    struct Vertex { float x, y, z; };
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+
+    MeshAsset(const std::vector<Vertex>& v, const std::vector<uint32_t>& i)
+        : vertices(v), indices(i) {}
+
+    std::type_index getType() const override { return typeid(MeshAsset); }
+
+    void writeToFile(const std::string& path) const override {
+        std::ofstream f(path, std::ios::binary);
+        uint32_t vcount = static_cast<uint32_t>(vertices.size());
+        f.write(reinterpret_cast<const char*>(&vcount), sizeof(vcount));
+        f.write(reinterpret_cast<const char*>(vertices.data()), vcount * sizeof(Vertex));
+        uint32_t icount = static_cast<uint32_t>(indices.size());
+        f.write(reinterpret_cast<const char*>(&icount), sizeof(icount));
+        f.write(reinterpret_cast<const char*>(indices.data()), icount * sizeof(uint32_t));
+    }
+
+    static std::shared_ptr<MeshAsset> readFromFile(const std::string& path) {
+        std::ifstream f(path, std::ios::binary);
+        if (!f) return nullptr;
+        uint32_t vcount;
+        f.read(reinterpret_cast<char*>(&vcount), sizeof(vcount));
+        std::vector<Vertex> verts(vcount);
+        f.read(reinterpret_cast<char*>(verts.data()), vcount * sizeof(Vertex));
+        uint32_t icount;
+        f.read(reinterpret_cast<char*>(&icount), sizeof(icount));
+        std::vector<uint32_t> inds(icount);
+        f.read(reinterpret_cast<char*>(inds.data()), icount * sizeof(uint32_t));
+        return std::make_shared<MeshAsset>(verts, inds);
+    }
+};
+
+class AssetManager {
+public:
+    static AssetManager& instance() {
+        static AssetManager inst;
+        return inst;
+    }
+
+    std::shared_ptr<TextureAsset> loadTexture(const std::string& path) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto it = m_cache.find(path);
+        if (it != m_cache.end()) return std::dynamic_pointer_cast<TextureAsset>(it->second);
+        auto tex = TextureAsset::readFromFile(path);
+        if (tex) m_cache[path] = tex;
+        return tex;
+    }
+
+    std::shared_ptr<MeshAsset> loadMesh(const std::string& path) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto it = m_cache.find(path);
+        if (it != m_cache.end()) return std::dynamic_pointer_cast<MeshAsset>(it->second);
+        auto mesh = MeshAsset::readFromFile(path);
+        if (mesh) m_cache[path] = mesh;
+        return mesh;
+    }
+
+    void saveAsset(const std::string& path, std::shared_ptr<Asset> asset) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        asset->writeToFile(path);
+        m_cache[path] = asset;
+    }
+
+private:
+    std::unordered_map<std::string, std::shared_ptr<Asset>> m_cache;
+    std::mutex m_mutex;
+};
+
+} // namespace arxglue
+
+===
+.\src\core\baking.hpp
+===
+#pragma once
+#include "graph.hpp"
+#include <string>
+#include <functional>
+
+namespace arxglue {
+
+/**
+ * Запекает подграф, начиная с корневого узла rootId, в файл ассета по указанному пути.
+ * @param graph Исходный граф.
+ * @param rootId Идентификатор корневого узла подграфа.
+ * @param assetPath Путь для сохранения запечённого ассета.
+ * @param assetType Тип ассета ("texture" или "mesh").
+ * @return Идентификатор нового узла AssetNode, заменяющего подграф, или 0 при ошибке.
+ */
+NodeId bakeSubgraph(Graph& graph, NodeId rootId, const std::string& assetPath, const std::string& assetType = "texture");
+
+/**
+ * Собирает все узлы, от которых зависит данный (включая сам root).
+ */
+std::vector<NodeId> collectDependencies(Graph& graph, NodeId rootId);
+
+} // namespace arxglue
+
+===
+.\src\core\context.hpp
+===
+#pragma once
+#include "../arxglue.hpp"
+
+namespace arxglue {
+using Context = arxglue::Context;
+}
+
+===
+.\src\core\executor.hpp
+===
+// src/core/executor.hpp
+#pragma once
+#include "graph.hpp"
+#include "../threading/thread_pool.hpp"
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <future>
+#include <unordered_map>
+
+namespace arxglue {
+
+class Executor {
+public:
+    explicit Executor(size_t numThreads = 0);
+    ~Executor() = default;
+
+    void execute(Graph& graph, Context& ctx, const std::vector<NodeId>& rootNodes = {});
+    void invalidate(NodeId id);
+
+private:
+    std::unique_ptr<ThreadPool> m_pool;
+    Graph* m_graph = nullptr;
+    Context* m_ctx = nullptr;
+
+    struct NodeSync {
+        std::promise<void> promise;
+        std::shared_future<void> future;
+        std::atomic<bool> scheduled{false};
+    };
+    std::unordered_map<NodeId, std::unique_ptr<NodeSync>> m_syncMap;
+    std::mutex m_syncMutex;
+
+    void executeNodeAsync(NodeId id);
+    void waitForDependencies(NodeId id);
+    std::shared_future<void> getFuture(NodeId id);
+    void tryScheduleDependents(NodeId id);
+};
+
+} // namespace arxglue
+
+===
+.\src\core\graph.hpp
+===
+// src/core/graph.hpp
+#pragma once
+#include "node.hpp"
+#include <vector>
+#include <unordered_map>
+#include <memory>
+
+namespace arxglue {
+
+struct Connection {
+    NodeId srcNode;
+    int srcPort;
+    NodeId dstNode;
+    int dstPort;
+};
+
+class Graph {
+public:
+    NodeId addNode(std::unique_ptr<INode> node);
+    void removeNode(NodeId id);
+    INode* getNode(NodeId id);
+    const std::vector<std::unique_ptr<INode>>& getNodes() const { return m_nodes; }
+
+    // Добавляет соединение, при необходимости вставляя конвертер типов.
+    // Бросает исключение при несовместимых типах или возникновении цикла.
+    void addConnection(const Connection& conn);
+    void removeConnection(NodeId src, int srcPort, NodeId dst, int dstPort);
+    const std::vector<Connection>& getConnections() const { return m_connections; }
+
+    std::vector<NodeId> getDependencies(NodeId id) const;
+    std::vector<NodeId> getDependents(NodeId id) const;
+    void invalidateSubgraph(NodeId root);
+    std::vector<NodeId> topologicalSort() const;
+
+    void serialize(nlohmann::json& j) const;
+    void deserialize(const nlohmann::json& j);
+
+private:
+    std::vector<std::unique_ptr<INode>> m_nodes;
+    std::unordered_map<NodeId, size_t> m_idToIndex;
+    std::vector<Connection> m_connections;
+    NodeId m_nextId = 1;
+
+    mutable std::vector<std::vector<NodeId>> m_adj;
+    mutable std::vector<int> m_inDegree;
+    mutable bool m_adjValid = false;
+
+    void buildAdjacency() const;
+
+    // Структура для хранения результата подготовки соединения
+    struct ConnectionPlan {
+        std::vector<Connection> connections;   // соединения, которые нужно добавить
+        NodeId createdConverterId = 0;         // ID созданного конвертера, если был создан
+        bool valid = false;
+    };
+
+    ConnectionPlan prepareConnection(NodeId srcNode, int srcPort, NodeId dstNode, int dstPort);
+};
+
+} // namespace arxglue
+
+===
+.\src\core\node.hpp
+===
+// src/core/node.hpp
+#pragma once
+#include "../arxglue.hpp"
+#include "../types/type_system.hpp"
+#include <nlohmann/json.hpp>
+#include <memory>
+#include <vector>
+#include <any>
+#include <unordered_map>
+#include <typeindex>
+#include <iostream>
+#include <mutex>
+#include <shared_mutex>
+
+namespace arxglue {
+
+class INode {
+public:
+    virtual ~INode() = default;
+    virtual void execute(Context& ctx) = 0;
+    virtual ComponentMetadata getMetadata() const = 0;
+    virtual void setParameter(const std::string& name, const std::any& value) = 0;
+    virtual std::any getParameter(const std::string& name) const = 0;
+    virtual void serialize(nlohmann::json& j) const = 0;
+    virtual void deserialize(const nlohmann::json& j) = 0;
+
+    void setId(NodeId id) { m_id = id; }
+    NodeId getId() const { return m_id; }
+
+    bool isDirty() const { return m_dirty; }
+    void setDirty(bool dirty) { m_dirty = dirty; }
+
+    void setCachedOutput(const std::any& output) { m_cachedOutput = output; }
+    std::any getCachedOutput() const { return m_cachedOutput; }
+
+    // Получить значение входа с автоматической конвертацией к ожидаемому типу
+    std::any getInputValue(Context& ctx, int portIndex) const {
+        const auto& inputs = getMetadata().inputs;
+        if (portIndex < 0 || portIndex >= static_cast<int>(inputs.size())) {
+            return {};
+        }
+        std::string key = "in_" + std::to_string(m_id) + "_" + std::to_string(portIndex);
+        std::shared_lock stateLock(ctx.stateMutex);   // переименовано
+        auto it = ctx.state.find(key);
+        if (it == ctx.state.end()) {
+            return {};
+        }
+        const std::any& rawValue = it->second;
+        const std::type_index& expectedType = inputs[portIndex].type;
+        if (std::type_index(rawValue.type()) == expectedType) {
+            return rawValue;
+        }
+        try {
+            return TypeSystem::instance().convertTo(rawValue, expectedType);
+        } catch (const std::exception& e) {
+            std::cerr << "Type conversion error in node " << m_id << " port " << portIndex << ": " << e.what() << std::endl;
+            return {};
+        }
+    }
+
+    void setOutputValue(Context& ctx, int portIndex, const std::any& value) {
+        const auto& outputs = getMetadata().outputs;
+        if (portIndex >= 0 && portIndex < static_cast<int>(outputs.size())) {
+            std::string key = "out_" + std::to_string(m_id) + "_" + std::to_string(portIndex);
+            std::unique_lock lock(ctx.stateMutex);
+            ctx.state[key] = value;
+        }
+        ctx.output = value;
+    }
+
+    // Проверка, изменились ли входы по сравнению с последним выполнением
+    bool areInputsChanged(const Context& ctx) {
+        const auto& inputs = getMetadata().inputs;
+        if (inputs.empty()) return false;
+
+        std::lock_guard<std::mutex> inputLock(m_inputMutex);
+        if (m_lastInputs.size() != inputs.size()) {
+            m_lastInputs.resize(inputs.size());
+            return true;
+        }
+
+        for (size_t i = 0; i < inputs.size(); ++i) {
+            std::string key = "in_" + std::to_string(m_id) + "_" + std::to_string(i);
+            std::any currentValue;
+            {
+                std::shared_lock lock(ctx.stateMutex);
+                auto it = ctx.state.find(key);
+                if (it != ctx.state.end()) {
+                    currentValue = it->second;
+                }
+            }
+            if (!TypeSystem::compareAny(currentValue, m_lastInputs[i])) {
+                m_lastInputs[i] = currentValue;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Обновить сохранённые значения входов после выполнения
+    void updateLastInputs(const Context& ctx) {
+        const auto& inputs = getMetadata().inputs;
+        std::lock_guard<std::mutex> inputLock(m_inputMutex);   
+        m_lastInputs.resize(inputs.size());
+        for (size_t i = 0; i < inputs.size(); ++i) {
+            std::string key = "in_" + std::to_string(m_id) + "_" + std::to_string(i);
+            std::shared_lock stateLock(ctx.stateMutex);        
+            auto it = ctx.state.find(key);
+            m_lastInputs[i] = (it != ctx.state.end()) ? it->second : std::any{};
+        }
+    }
+
+    std::type_index getInputPortType(int portIndex) const {
+        const auto& inputs = getMetadata().inputs;
+        if (portIndex >= 0 && portIndex < static_cast<int>(inputs.size())) {
+            return inputs[portIndex].type;
+        }
+        return typeid(void);
+    }
+
+    std::type_index getOutputPortType(int portIndex) const {
+        const auto& outputs = getMetadata().outputs;
+        if (portIndex >= 0 && portIndex < static_cast<int>(outputs.size())) {
+            return outputs[portIndex].type;
+        }
+        return typeid(void);
+    }
+
+    bool areParametersChanged() const {
+        size_t currentHash = computeParamsHash();
+        if (currentHash != m_lastParamsHash) {
+            m_lastParamsHash = currentHash;
+            return true;
+        }
+        return false;
+    }
+
+    void clearLastInputs() {
+        std::lock_guard<std::mutex> inputLock(m_inputMutex);
+        m_lastInputs.clear();
+    }
+
+protected:
+    virtual size_t computeParamsHash() const { return 0; }
+
+private:
+    NodeId m_id = 0;
+    bool m_dirty = true;
+    std::any m_cachedOutput;
+    mutable std::vector<std::any> m_lastInputs;
+    mutable std::mutex m_inputMutex;
+    mutable size_t m_lastParamsHash = 0;
+};
+
+} // namespace arxglue
+
+===
+.\src\game\Game.hpp
+===
+// src/game/Game.hpp
+#pragma once
+
+#include <vector>
+#include <memory>
+#include <array>
+#include <atomic>
+#include <mutex>
+#include <random>
+
+#include "../render/graphics_device.hpp"
+#include "../render/scene.hpp"
+#include "../render/camera.hpp"
+#include "../render/mesh.hpp"
+#include "../render/material.hpp"
+#include "../core/graph.hpp"
+#include "../core/executor.hpp"
+
+namespace arxglue::game {
+
+struct Platform {
+    std::array<float, 3> position;
+    std::array<float, 3> scale;
+    std::array<float, 3> color;
+    bool isBouncy;
+    bool isBreakable;
+};
+
+class Game {
+public:
+    Game(GLFWwindow* window);
+    ~Game();
+
+    void run();
+
+private:
+    void processInput(float dt);
+    void updatePhysics(float dt);
+    void generatePlatformsProcedurally(float playerY);
+    void updateScene();
+    void updateScoreTexture();
+    void initProceduralColorGraph();
+    std::array<float,3> computePlatformColor(float y, bool isBouncy, bool isBreakable);
+    std::array<float,16> makeBillboardMatrix(const std::array<float,3>& position, float width, float height);
+
+    GLFWwindow* m_window;
+    render::Camera m_camera;
+    std::shared_ptr<render::Mesh> m_playerMesh;
+    std::shared_ptr<render::Mesh> m_platformMesh;
+    std::shared_ptr<render::Material> m_playerMaterial;
+    std::shared_ptr<render::Material> m_platformMaterialBase;
+    std::shared_ptr<render::Material> m_scoreMaterial;
+    std::shared_ptr<render::Mesh> m_quadMesh;
+
+    // Игровое состояние
+    std::array<float, 3> m_playerPos = {0.0f, 0.0f, 0.0f};
+    std::array<float, 3> m_playerVel = {0.0f, 0.0f, 0.0f};
+    float m_score = 0.0f;
+    float m_maxScore = 0.0f;
+
+    std::vector<Platform> m_platforms;
+    std::mutex m_platformsMutex;
+
+    bool m_moveLeft = false;
+    bool m_moveRight = false;
+
+    // Процедурная генерация (однопоточная)
+    std::mt19937 m_rng;
+    std::atomic<bool> m_genRequested{false};
+
+    // Граф для цвета платформ (защищён мьютексом)
+    std::unique_ptr<Graph> m_colorGraph;
+    std::unique_ptr<Executor> m_colorExecutor;
+    NodeId m_colorGraphYInputId;
+    NodeId m_colorGraphOutputId;
+    Context m_colorCtx;
+    std::mutex m_colorMutex;
+
+    // Граф для текста счёта
+    std::unique_ptr<Graph> m_textGraph;
+    std::unique_ptr<Executor> m_textExecutor;
+    NodeId m_textGraphOutputId;
+    Context m_textCtx;
+    std::shared_ptr<render::Texture> m_scoreTexture;
+    float m_lastScoreRendered = -1.0f;
+
+    // Запечённая текстура
+    std::shared_ptr<render::Texture> m_bakedCheckerTexture;
+};
+
+} // namespace arxglue::game
+
+===
+.\src\game\ProceduralPlatformGenerator.hpp
+===
+// src/game/ProceduralPlatformGenerator.hpp
+#pragma once
+
+#include "../core/graph.hpp"
+#include "../core/executor.hpp"
+#include "../assets/asset_manager.hpp"
+#include <memory>
+#include <array>
+
+namespace arxglue::game {
+
+struct PlatformParams {
+    float width;
+    float height;
+    float depth;
+    std::array<float, 3> color;
+    bool isBouncy;      // пружинистая платформа
+    bool isBreakable;   // ломающаяся
+};
+
+class ProceduralPlatformGenerator {
+public:
+    ProceduralPlatformGenerator();
+    ~ProceduralPlatformGenerator() = default;
+
+    // Генерирует параметры платформы по её Y-координате (и глобальному seed)
+    PlatformParams generate(float y, int seedOffset = 0);
+
+private:
+    Graph m_graph;
+    Executor m_executor;
+    NodeId m_rootNodeId;
+    Context m_ctx;
+
+    void buildGraph();
+};
+
+} // namespace arxglue::game
+
+===
+.\src\nodes\asset_node.hpp
+===
+#pragma once
+#include "../core/node.hpp"
+#include "../assets/asset_manager.hpp"
+#include <memory>
+#include <string>
+
+namespace arxglue {
+
+class AssetNode : public INode {
+public:
+    AssetNode() = default;
+    explicit AssetNode(const std::string& assetPath, const std::string& assetType = "texture")
+        : m_assetPath(assetPath), m_assetType(assetType) {}
+
+    void execute(Context& ctx) override;
+
+    ComponentMetadata getMetadata() const override {
+        std::type_index outputType = typeid(void);
+        if (m_assetType == "texture") {
+            outputType = typeid(std::shared_ptr<TextureAsset>);
+        } else if (m_assetType == "mesh") {
+            outputType = typeid(std::shared_ptr<MeshAsset>);
+        }
+
+        return {"Asset",
+                {},
+                {{"asset", outputType}},
+                true,   // pure
+                false}; // not volatile
+    }
+
+    void setParameter(const std::string& name, const std::any& value) override {
+        if (name == "path") m_assetPath = std::any_cast<std::string>(value);
+        else if (name == "type") m_assetType = std::any_cast<std::string>(value);
+    }
+
+    std::any getParameter(const std::string& name) const override {
+        if (name == "path") return m_assetPath;
+        if (name == "type") return m_assetType;
+        return {};
+    }
+
+    void serialize(nlohmann::json& j) const override {
+        j["type"] = "AssetNode";
+        j["params"]["path"] = m_assetPath;
+        j["params"]["assetType"] = m_assetType;
+    }
+
+    void deserialize(const nlohmann::json& j) override {
+        if (j.contains("params")) {
+            if (j["params"].contains("path")) m_assetPath = j["params"]["path"].get<std::string>();
+            if (j["params"].contains("assetType")) m_assetType = j["params"]["assetType"].get<std::string>();
+        }
+    }
+
+private:
+    std::string m_assetPath;
+    std::string m_assetType = "texture";
+    std::shared_ptr<Asset> m_cachedAsset; // хранится как базовый тип
+};
+
+} // namespace arxglue
+
+===
+.\src\nodes\basic_nodes.hpp
+===
+#pragma once
+#include "../core/node.hpp"
+#include "../assets/asset_manager.hpp"
+#include <string>
+#include <iostream>
+#include <thread>
+#include <mutex>
+#include <chrono>
+
+namespace arxglue {
+
+void registerBasicNodes();
+
+template<typename T>
+class ConstantNode : public INode {
+public:
+    ConstantNode(T value) : m_value(value) {}
+
+    void execute(Context& ctx) override {
+        setOutputValue(ctx, 0, m_value);
+    }
+
+    ComponentMetadata getMetadata() const override {
+        return {"Constant" + std::string(typeid(T).name()),
+                {}, // нет входов
+                {{"out", typeid(T)}},
+                true, false};
+    }
+
+    void setParameter(const std::string& name, const std::any& value) override {
+        if (name == "value") {
+            m_value = std::any_cast<T>(value);
+            setDirty(true); // <-- добавить
+        }
+    }
+
+    std::any getParameter(const std::string& name) const override {
+        if (name == "value") return m_value;
+        return {};
+    }
+
+    void serialize(nlohmann::json& j) const override {
+        if constexpr (std::is_same_v<T, int>) {
+            j["type"] = "ConstantInt";
+        } else if constexpr (std::is_same_v<T, float>) {
+            j["type"] = "ConstantFloat";
+        } else {
+            j["type"] = "ConstantUnknown";
+        }
+        j["params"]["value"] = m_value;
+    }
+
+    void deserialize(const nlohmann::json& j) override {
+        if (j.contains("params") && j["params"].contains("value")) {
+            m_value = j["params"]["value"].get<T>();
+        }
+    }
+
+protected:
+    size_t computeParamsHash() const override {
+        return std::hash<T>{}(m_value);
+    }
+
+private:
+    T m_value;
+};
+
+class AddNode : public INode {
+public:
+    void execute(Context& ctx) override;
+    ComponentMetadata getMetadata() const override {
+        return {"Add",
+                {{"a", typeid(int)}, {"b", typeid(int)}},
+                {{"out", typeid(int)}},
+                true, false};
+    }
+    void setParameter(const std::string&, const std::any&) override {}
+    std::any getParameter(const std::string&) const override { return {}; }
+    void serialize(nlohmann::json& j) const override { j["type"] = "Add"; }
+    void deserialize(const nlohmann::json&) override {}
+};
+
+class LoadTextureNode : public INode {
+public:
+    LoadTextureNode(const std::string& path = "") : m_path(path) {}
+    void execute(Context& ctx) override;
+    ComponentMetadata getMetadata() const override {
+        return {"LoadTexture",
+                {},
+                {{"texture", typeid(std::shared_ptr<TextureAsset>)}},
+                false, false};
+    }
+    void setParameter(const std::string& name, const std::any& value) override {
+        if (name == "path") m_path = std::any_cast<std::string>(value);
+    }
+    std::any getParameter(const std::string& name) const override {
+        if (name == "path") return m_path;
+        return {};
+    }
+    void serialize(nlohmann::json& j) const override {
+        j["type"] = "LoadTexture";
+        j["params"]["path"] = m_path;
+    }
+    void deserialize(const nlohmann::json& j) override {
+        if (j.contains("params") && j["params"].contains("path"))
+            m_path = j["params"]["path"].get<std::string>();
+    }
+private:
+    std::string m_path;
+};
+
+class PerlinNoiseNode : public INode {
+public:
+    PerlinNoiseNode(float scale = 0.01f, int octaves = 4) : m_scale(scale), m_octaves(octaves) {}
+    void execute(Context& ctx) override;
+    ComponentMetadata getMetadata() const override {
+        return {"PerlinNoise",
+                {},
+                {{"value", typeid(float)}},
+                false, false}; // volatile (случайное значение)
+    }
+    void setParameter(const std::string& name, const std::any& value) override {
+        if (name == "scale") m_scale = std::any_cast<float>(value);
+        else if (name == "octaves") m_octaves = std::any_cast<int>(value);
+    }
+    std::any getParameter(const std::string& name) const override {
+        if (name == "scale") return m_scale;
+        if (name == "octaves") return m_octaves;
+        return {};
+    }
+    void serialize(nlohmann::json& j) const override {
+        j["type"] = "PerlinNoise";
+        j["params"]["scale"] = m_scale;
+        j["params"]["octaves"] = m_octaves;
+    }
+    void deserialize(const nlohmann::json& j) override {
+        if (j.contains("params")) {
+            if (j["params"].contains("scale")) m_scale = j["params"]["scale"].get<float>();
+            if (j["params"].contains("octaves")) m_octaves = j["params"]["octaves"].get<int>();
+        }
+    }
+private:
+    float m_scale;
+    int m_octaves;
+};
+
+class FloatConsumerNode : public INode {
+public:
+    void execute(Context& ctx) override {
+        float val = std::any_cast<float>(getInputValue(ctx, 0));
+        setOutputValue(ctx, 0, val);
+        static std::mutex coutMutex;
+        std::lock_guard<std::mutex> lock(coutMutex);
+        std::cout << "[FloatConsumer] Received: " << val << std::endl;
+    }
+
+    ComponentMetadata getMetadata() const override {
+        return {"FloatConsumer",
+                {{"in", typeid(float), true}},
+                {{"out", typeid(float)}},
+                true, false};
+    }
+
+    void setParameter(const std::string&, const std::any&) override {}
+    std::any getParameter(const std::string&) const override { return {}; }
+    void serialize(nlohmann::json& j) const override { j["type"] = "FloatConsumer"; }
+    void deserialize(const nlohmann::json&) override {}
+};
+
+class SlowNode : public INode {
+public:
+    SlowNode() : m_delayMs(100) {}
+    explicit SlowNode(int delayMs) : m_delayMs(delayMs) {}
+
+    void execute(Context& ctx) override {
+        // Искусственная задержка для демонстрации параллелизма
+        std::this_thread::sleep_for(std::chrono::milliseconds(m_delayMs));
+
+        // Ожидаем на входе целое число, на выходе возвращаем его же
+        int val = std::any_cast<int>(getInputValue(ctx, 0));
+        setOutputValue(ctx, 0, val);
+    }
+
+    ComponentMetadata getMetadata() const override {
+        return {
+            "SlowNode",
+            {{"in", typeid(int), true}},
+            {{"out", typeid(int)}},
+            true,   // pure (результат зависит только от входа)
+            false   // не volatile
+        };
+    }
+
+    void setParameter(const std::string& name, const std::any& value) override {
+        if (name == "delay") {
+            m_delayMs = std::any_cast<int>(value);
+        }
+    }
+
+    std::any getParameter(const std::string& name) const override {
+        if (name == "delay") return m_delayMs;
+        return {};
+    }
+
+    void serialize(nlohmann::json& j) const override {
+        j["type"] = "SlowNode";
+        j["params"]["delay"] = m_delayMs;
+    }
+
+    void deserialize(const nlohmann::json& j) override {
+        if (j.contains("params") && j["params"].contains("delay")) {
+            m_delayMs = j["params"]["delay"].get<int>();
+        }
+    }
+
+private:
+    int m_delayMs;
+};
+
+} // namespace arxglue
+
+===
+.\src\nodes\checker_texture.hpp
+===
+#pragma once
+#include "../core/node.hpp"
+#include "../assets/asset_manager.hpp"
+#include <cstdint>
+
+namespace arxglue {
+
+class CheckerTextureNode : public INode {
+public:
+    CheckerTextureNode(int width = 256, int height = 256, int cellsX = 8, int cellsY = 8)
+        : m_width(width), m_height(height), m_cellsX(cellsX), m_cellsY(cellsY) {}
+
+    void execute(Context& ctx) override;
+
+    ComponentMetadata getMetadata() const override {
+        return {"CheckerTexture",
+                {},
+                {{"texture", typeid(std::shared_ptr<TextureAsset>)}},
+                true,   // pure
+                false}; // not volatile
+    }
+
+    void setParameter(const std::string& name, const std::any& value) override {
+        if (name == "width") m_width = std::any_cast<int>(value);
+        else if (name == "height") m_height = std::any_cast<int>(value);
+        else if (name == "cellsX") m_cellsX = std::any_cast<int>(value);
+        else if (name == "cellsY") m_cellsY = std::any_cast<int>(value);
+    }
+
+    std::any getParameter(const std::string& name) const override {
+        if (name == "width") return m_width;
+        if (name == "height") return m_height;
+        if (name == "cellsX") return m_cellsX;
+        if (name == "cellsY") return m_cellsY;
+        return {};
+    }
+
+    void serialize(nlohmann::json& j) const override {
+        j["type"] = "CheckerTexture";
+        j["params"]["width"] = m_width;
+        j["params"]["height"] = m_height;
+        j["params"]["cellsX"] = m_cellsX;
+        j["params"]["cellsY"] = m_cellsY;
+    }
+
+    void deserialize(const nlohmann::json& j) override {
+        if (j.contains("params")) {
+            if (j["params"].contains("width")) m_width = j["params"]["width"].get<int>();
+            if (j["params"].contains("height")) m_height = j["params"]["height"].get<int>();
+            if (j["params"].contains("cellsX")) m_cellsX = j["params"]["cellsX"].get<int>();
+            if (j["params"].contains("cellsY")) m_cellsY = j["params"]["cellsY"].get<int>();
+        }
+    }
+
+private:
+    int m_width;
+    int m_height;
+    int m_cellsX;
+    int m_cellsY;
+};
+
+} // namespace arxglue
+
+===
+.\src\nodes\convert_node.hpp
+===
+// src/nodes/convert_node.hpp
+#pragma once
+#include "../core/node.hpp"
+#include "../types/type_system.hpp"
+
+namespace arxglue {
+
+class ConvertNode : public INode {
+public:
+    ConvertNode() = default;
+    explicit ConvertNode(TypeId from, TypeId to) : m_from(from), m_to(to) {}
+
+    void execute(Context& ctx) override;
+    ComponentMetadata getMetadata() const override;
+
+    void setParameter(const std::string& name, const std::any& value) override;
+    std::any getParameter(const std::string& name) const override;
+
+    void serialize(nlohmann::json& j) const override;
+    void deserialize(const nlohmann::json& j) override;
+
+protected:
+    size_t computeParamsHash() const override;
+
+private:
+    TypeId m_from = TypeId::Unknown;
+    TypeId m_to = TypeId::Unknown;
+};
+
+} // namespace arxglue
+
+===
+.\src\nodes\node_factory.hpp
+===
+#pragma once
+#include "../core/node.hpp"
+#include <memory>
+#include <unordered_map>
+#include <functional>
+
+namespace arxglue {
+
+class NodeFactory {
+public:
+    using Creator = std::function<std::unique_ptr<INode>()>;
+
+    static NodeFactory& instance() {
+        static NodeFactory inst;
+        return inst;
+    }
+
+    void registerNode(const std::string& type, Creator creator) {
+        m_creators[type] = std::move(creator);
+    }
+
+    std::unique_ptr<INode> createNode(const std::string& type) {
+        auto it = m_creators.find(type);
+        if (it == m_creators.end()) return nullptr;
+        return it->second();
+    }
+
+private:
+    std::unordered_map<std::string, Creator> m_creators;
+};
+
+} // namespace arxglue
+
+===
+.\src\nodes\render_nodes.hpp
+===
+#pragma once
+
+#include "../core/node.hpp"
+#include "../render/graphics_device.hpp"
+#include "../render/mesh.hpp"
+#include "../render/material.hpp"
+#include "../render/scene.hpp"
+#include "../render/camera.hpp"
+#include "../render/command_buffer.hpp"
+#include "../assets/asset_manager.hpp"
+#include <fstream>
+#include <array>
+
+namespace arxglue {
+
+void registerRenderNodes();
+
+// Загрузка меша из файла (бинарный формат .3tm)
+class LoadMeshNode : public INode {
+public:
+    LoadMeshNode(const std::string& path = "") : m_path(path) {}
+
+    void execute(Context& ctx) override;
+    ComponentMetadata getMetadata() const override {
+        return {"LoadMesh",
+                {},
+                {{"mesh", typeid(std::shared_ptr<render::Mesh>)}},
+                false, false};
+    }
+    void setParameter(const std::string& name, const std::any& value) override {
+        if (name == "path") m_path = std::any_cast<std::string>(value);
+    }
+    std::any getParameter(const std::string& name) const override {
+        if (name == "path") return m_path;
+        return {};
+    }
+    void serialize(nlohmann::json& j) const override {
+        j["type"] = "LoadMesh";
+        j["params"]["path"] = m_path;
+    }
+    void deserialize(const nlohmann::json& j) override {
+        if (j.contains("params") && j["params"].contains("path"))
+            m_path = j["params"]["path"].get<std::string>();
+    }
+private:
+    std::string m_path;
+};
+
+// Создание материала (с шейдерами по умолчанию)
+class MaterialNode : public INode {
+public:
+    MaterialNode() = default;
+
+    void execute(Context& ctx) override;
+    ComponentMetadata getMetadata() const override {
+        return {"Material",
+                {},
+                {{"material", typeid(std::shared_ptr<render::Material>)}},
+                false, false};
+    }
+    void setParameter(const std::string& name, const std::any& value) override {
+        if (name == "color") m_color = std::any_cast<std::array<float, 3>>(value);
+    }
+    std::any getParameter(const std::string& name) const override {
+        if (name == "color") return m_color;
+        return {};
+    }
+    void serialize(nlohmann::json& j) const override {
+        j["type"] = "Material";
+        j["params"]["color"] = {m_color[0], m_color[1], m_color[2]};
+    }
+    void deserialize(const nlohmann::json& j) override {
+        if (j.contains("params") && j["params"].contains("color")) {
+            auto arr = j["params"]["color"];
+            m_color = {arr[0].get<float>(), arr[1].get<float>(), arr[2].get<float>()};
+        }
+    }
+private:
+    std::array<float, 3> m_color = {1.0f, 1.0f, 1.0f};
+};
+
+// Узел сцены (принимает несколько мешей с материалами)
+class SceneNode : public INode {
+public:
+    void execute(Context& ctx) override;
+    ComponentMetadata getMetadata() const override {
+        return {"Scene",
+                {}, // Входы: несколько (можно добавлять через параметры)
+                {{"scene", typeid(std::shared_ptr<render::Scene>)}},
+                false, false};
+    }
+    void setParameter(const std::string& name, const std::any& value) override;
+    std::any getParameter(const std::string& name) const override;
+    void serialize(nlohmann::json& j) const override;
+    void deserialize(const nlohmann::json& j) override;
+
+private:
+    struct RenderableDesc {
+        std::shared_ptr<render::Mesh> mesh;
+        std::shared_ptr<render::Material> material;
+        std::array<float, 16> transform;
+    };
+    std::vector<RenderableDesc> m_renderables;
+};
+
+// Узел камеры
+class CameraNode : public INode {
+public:
+    CameraNode() { updateMatrix(); }
+
+    void execute(Context& ctx) override;
+    ComponentMetadata getMetadata() const override {
+        return {"Camera",
+                {},
+                {{"camera", typeid(std::shared_ptr<render::Camera>)}},
+                false, false};
+    }
+    void setParameter(const std::string& name, const std::any& value) override;
+    std::any getParameter(const std::string& name) const override;
+    void serialize(nlohmann::json& j) const override;
+    void deserialize(const nlohmann::json& j) override;
+
+private:
+    std::array<float, 3> m_eye = {0.0f, 0.0f, 5.0f};
+    std::array<float, 3> m_center = {0.0f, 0.0f, 0.0f};
+    std::array<float, 3> m_up = {0.0f, 1.0f, 0.0f};
+    float m_fov = 45.0f;
+    float m_near = 0.1f;
+    float m_far = 100.0f;
+
+    void updateMatrix();
+};
+
+// Рендеринг сцены в текущий фреймбуфер (обычно экран)
+class RenderSceneNode : public INode {
+public:
+    void execute(Context& ctx) override;
+    ComponentMetadata getMetadata() const override {
+        return {"RenderScene",
+                {{"scene", typeid(std::shared_ptr<render::Scene>)},
+                 {"camera", typeid(std::shared_ptr<render::Camera>)}},
+                {},
+                false, false};
+    }
+    void setParameter(const std::string&, const std::any&) override {}
+    std::any getParameter(const std::string&) const override { return {}; }
+    void serialize(nlohmann::json& j) const override { j["type"] = "RenderScene"; }
+    void deserialize(const nlohmann::json&) override {}
+};
+
+// Рендеринг сцены в текстуру
+class RenderToTextureNode : public INode {
+public:
+    void execute(Context& ctx) override;
+    ComponentMetadata getMetadata() const override {
+        return {"RenderToTexture",
+                {{"scene", typeid(std::shared_ptr<render::Scene>)},
+                 {"camera", typeid(std::shared_ptr<render::Camera>)}},
+                {{"texture", typeid(std::shared_ptr<render::Texture>)}},
+                false, false};
+    }
+    void setParameter(const std::string& name, const std::any& value) override {
+        if (name == "width") m_width = std::any_cast<int>(value);
+        else if (name == "height") m_height = std::any_cast<int>(value);
+    }
+    std::any getParameter(const std::string& name) const override {
+        if (name == "width") return m_width;
+        if (name == "height") return m_height;
+        return {};
+    }
+    void serialize(nlohmann::json& j) const override {
+        j["type"] = "RenderToTexture";
+        j["params"]["width"] = m_width;
+        j["params"]["height"] = m_height;
+    }
+    void deserialize(const nlohmann::json& j) override {
+        if (j.contains("params")) {
+            if (j["params"].contains("width")) m_width = j["params"]["width"].get<int>();
+            if (j["params"].contains("height")) m_height = j["params"]["height"].get<int>();
+        }
+    }
+private:
+    int m_width = 512;
+    int m_height = 512;
+};
+
+} // namespace arxglue
+
+===
+.\src\nodes\text_texture_node.hpp
+===
+// src/nodes/text_texture_node.hpp
+#pragma once
+#include "../core/node.hpp"
+#include "../assets/asset_manager.hpp"
+#include <string>
+#include <vector>
+#include <cstdint>
+
+namespace arxglue {
+
+class TextTextureNode : public INode {
+public:
+    TextTextureNode(int width = 256, int height = 128, const std::string& text = "", 
+                    uint8_t r = 255, uint8_t g = 255, uint8_t b = 255);
+    
+    void execute(Context& ctx) override;
+    ComponentMetadata getMetadata() const override;
+    void setParameter(const std::string& name, const std::any& value) override;
+    std::any getParameter(const std::string& name) const override;
+    void serialize(nlohmann::json& j) const override;
+    void deserialize(const nlohmann::json& j) override;
+
+private:
+    int m_width;
+    int m_height;
+    std::string m_text;
+    uint8_t m_textR, m_textG, m_textB;
+    std::shared_ptr<TextureAsset> m_cachedTexture;
+
+    void generateTexture();
+};
+
+} // namespace arxglue
+
+===
+.\src\render\camera.hpp
+===
+#pragma once
+
+#include <array>
+
+namespace arxglue::render {
+
+class Camera {
+public:
+    Camera();
+
+    void setPerspective(float fovY, float aspect, float nearPlane, float farPlane);
+    void lookAt(const std::array<float, 3>& eye,
+                const std::array<float, 3>& center,
+                const std::array<float, 3>& up);
+
+    const float* getViewMatrix() const { return m_viewMatrix.data(); }
+    const float* getProjectionMatrix() const { return m_projMatrix.data(); }
+
+private:
+    std::array<float, 16> m_viewMatrix;
+    std::array<float, 16> m_projMatrix;
+
+    static void perspective(std::array<float, 16>& mat, float fovY, float aspect, float nearPlane, float farPlane);
+    static void lookAt(std::array<float, 16>& mat,
+                       const std::array<float, 3>& eye,
+                       const std::array<float, 3>& center,
+                       const std::array<float, 3>& up);
+    static void multiply(std::array<float, 16>& result,
+                         const std::array<float, 16>& a,
+                         const std::array<float, 16>& b);
+};
+
+} // namespace arxglue::render
+
+===
+.\src\render\command_buffer.hpp
+===
+#pragma once
+
+#include <functional>
+#include <vector>
+#include <memory>
+#include "scene.hpp"
+#include "camera.hpp"
+#include "material.hpp"
+#include "mesh.hpp"
+#include "render_target.hpp"
+
+namespace arxglue::render {
+
+class CommandBuffer {
+public:
+    void begin();
+    void end();
+
+    void setRenderTarget(std::shared_ptr<RenderTarget> target);
+    void clear(float r, float g, float b, float a);
+    void setViewport(int x, int y, int width, int height);
+    void drawMesh(std::shared_ptr<Mesh> mesh,
+                  std::shared_ptr<Material> material,
+                  const std::array<float, 16>& transform);
+    void drawScene(const Scene& scene, const Camera& camera);
+
+    // Выполнить все записанные команды
+    void execute();
+
+private:
+    struct Command {
+        enum Type { Begin, End, SetRenderTarget, Clear, SetViewport, DrawMesh, DrawScene };
+        Type type;
+        std::any data;
+    };
+
+    std::vector<Command> m_commands;
+    std::shared_ptr<RenderTarget> m_currentTarget;
+};
+
+} // namespace arxglue::render
+
+===
+.\src\render\graphics_device.hpp
+===
+#pragma once
+
+#define GLFW_INCLUDE_NONE
+#include <memory>
+#include <string>
+#include <functional>
+#include <any>
+#include <unordered_map>
+#include <mutex>
+#include <GLFW/glfw3.h>
+#include <glad/glad.h>
+
+namespace arxglue::render {
+
+class Texture;
+class Mesh;
+class Shader;
+class Material;
+class RenderTarget;
+
+enum class ShaderType {
+    Vertex,
+    Fragment,
+    Geometry,
+    Compute
+};
+
+// Интерфейс графического устройства (абстракция над OpenGL)
+class GraphicsDevice {
+public:
+    static GraphicsDevice& instance();
+
+    // Инициализация с окном
+    bool initialize(GLFWwindow* window);
+    void shutdown();
+
+    // Создание ресурсов
+    std::shared_ptr<Texture> createTexture(int width, int height, int channels, const void* data);
+    std::shared_ptr<Texture> createRenderTargetTexture(int width, int height);
+    std::shared_ptr<Mesh> createMesh(const std::vector<float>& vertices,
+                                     const std::vector<uint32_t>& indices,
+                                     const std::vector<int>& attribSizes);
+    std::shared_ptr<Shader> createShader(const std::string& vertexSrc,
+                                         const std::string& fragmentSrc);
+    std::shared_ptr<Material> createMaterial(std::shared_ptr<Shader> shader);
+    std::shared_ptr<RenderTarget> createRenderTarget(int width, int height);
+
+    // Текущий контекст
+    GLFWwindow* getWindow() const { return m_window; }
+    void makeCurrent();
+
+    // Очистка экрана
+    void clear(float r, float g, float b, float a);
+
+    // Представление текущего фреймбуфера (swap buffers)
+    void swapBuffers();
+
+    // Установка области вывода
+    void setViewport(int x, int y, int width, int height);
+
+private:
+    GraphicsDevice() = default;
+    ~GraphicsDevice() = default;
+
+    GLFWwindow* m_window = nullptr;
+    bool m_initialized = false;
+};
+
+} // namespace arxglue::render
+
+===
+.\src\render\material.hpp
+===
+#pragma once
+
+#include <memory>
+#include <unordered_map>
+#include <string>
+#include <any>
+#include "shader.hpp"
+#include "texture.hpp"
+
+namespace arxglue::render {
+
+class Material {
+public:
+    explicit Material(std::shared_ptr<Shader> shader);
+    ~Material() = default;
+
+    void setTexture(const std::string& name, std::shared_ptr<Texture> texture);
+    void setParameter(const std::string& name, const std::any& value);
+    void apply() const; // Применяет шейдер и устанавливает uniform'ы
+
+    std::shared_ptr<Shader> getShader() const { return m_shader; }
+
+private:
+    std::shared_ptr<Shader> m_shader;
+    std::unordered_map<std::string, std::shared_ptr<Texture>> m_textures;
+    std::unordered_map<std::string, std::any> m_parameters;
+};
+
+} // namespace arxglue::render
+
+===
+.\src\render\mesh.hpp
+===
+#pragma once
+
+#include <vector>
+#include <cstdint>
+#include <glad/glad.h>
+
+namespace arxglue::render {
+
+class Mesh {
+public:
+    Mesh(const std::vector<float>& vertices,
+         const std::vector<uint32_t>& indices,
+         const std::vector<int>& attribSizes);
+    ~Mesh();
+
+    Mesh(const Mesh&) = delete;
+    Mesh& operator=(const Mesh&) = delete;
+    Mesh(Mesh&& other) noexcept;
+    Mesh& operator=(Mesh&& other) noexcept;
+
+    void draw() const;
+
+private:
+    GLuint m_vao = 0;
+    GLuint m_vbo = 0;
+    GLuint m_ebo = 0;
+    size_t m_indexCount = 0;
+};
+
+} // namespace arxglue::render
+
+===
+.\src\render\render_target.hpp
+===
+#pragma once
+
+#include <memory>
+#include "texture.hpp"
+#include <glad/glad.h>
+
+namespace arxglue::render {
+
+class RenderTarget {
+public:
+    RenderTarget(int width, int height);
+    ~RenderTarget();
+
+    RenderTarget(const RenderTarget&) = delete;
+    RenderTarget& operator=(const RenderTarget&) = delete;
+
+    void bind() const;
+    void unbind() const;
+
+    std::shared_ptr<Texture> getColorTexture() const { return m_colorTexture; }
+    int getWidth() const { return m_width; }
+    int getHeight() const { return m_height; }
+
+private:
+    GLuint m_fbo = 0;
+    GLuint m_rbo = 0; // depth-stencil renderbuffer
+    std::shared_ptr<Texture> m_colorTexture;
+    int m_width;
+    int m_height;
+};
+
+} // namespace arxglue::render
+
+===
+.\src\render\scene.hpp
+===
+#pragma once
+
+#include <vector>
+#include <memory>
+#include <array>
+#include "mesh.hpp"
+#include "material.hpp"
+
+namespace arxglue::render {
+
+struct Renderable {
+    std::shared_ptr<Mesh> mesh;
+    std::shared_ptr<Material> material;
+    std::array<float, 16> transform; // model matrix
+};
+
+class Scene {
+public:
+    void addRenderable(std::shared_ptr<Mesh> mesh,
+                       std::shared_ptr<Material> material,
+                       const std::array<float, 16>& transform);
+    void addRenderable(Renderable&& renderable);
+
+    const std::vector<Renderable>& getRenderables() const { return m_renderables; }
+
+private:
+    std::vector<Renderable> m_renderables;
+};
+
+} // namespace arxglue::render
+
+===
+.\src\render\shader.hpp
+===
+#pragma once
+
+#include <string>
+#include <unordered_map>
+#include <glad/glad.h>
+
+namespace arxglue::render {
+
+class Shader {
+public:
+    Shader(const std::string& vertexSrc, const std::string& fragmentSrc);
+    ~Shader();
+
+    Shader(const Shader&) = delete;
+    Shader& operator=(const Shader&) = delete;
+    Shader(Shader&& other) noexcept;
+    Shader& operator=(Shader&& other) noexcept;
+
+    void bind() const;
+    void unbind() const;
+
+    void setUniform1i(const std::string& name, int value);
+    void setUniform1f(const std::string& name, float value);
+    void setUniformMat4(const std::string& name, const float* mat4);
+    void setUniform3fv(const std::string& name, const float* vec3);
+
+    GLuint getHandle() const { return m_program; }
+
+private:
+    GLuint m_program = 0;
+    mutable std::unordered_map<std::string, GLint> m_uniformCache;
+
+    GLuint compileShader(GLenum type, const std::string& source);
+    GLint getUniformLocation(const std::string& name) const;
+};
+
+} // namespace arxglue::render
+
+===
+.\src\render\texture.hpp
+===
+#pragma once
+
+#include <cstdint>
+#include <memory>
+#include <glad/glad.h>
+
+namespace arxglue::render {
+
+class Texture {
+public:
+    Texture(int width, int height, int channels, const void* data, bool asRenderTarget = false);
+    ~Texture();
+
+    // Запрет копирования, разрешено перемещение
+    Texture(const Texture&) = delete;
+    Texture& operator=(const Texture&) = delete;
+    Texture(Texture&& other) noexcept;
+    Texture& operator=(Texture&& other) noexcept;
+
+    void bind(unsigned int slot = 0) const;
+    void unbind() const;
+
+    GLuint getHandle() const { return m_handle; }
+    int getWidth() const { return m_width; }
+    int getHeight() const { return m_height; }
+
+    // Загрузка данных (для динамического обновления)
+    void updateData(const void* data);
+
+private:
+    GLuint m_handle = 0;
+    int m_width = 0;
+    int m_height = 0;
+    int m_channels = 0;
+    bool m_isRenderTarget = false;
+};
+
+} // namespace arxglue::render
+
+===
+.\src\threading\thread_pool.hpp
+===
+#pragma once
+
+#include <vector>
+#include <queue>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <functional>
+#include <future>
+#include <atomic>
+
+namespace arxglue {
+
+class ThreadPool {
+public:
+    explicit ThreadPool(size_t numThreads = std::thread::hardware_concurrency()) {
+        for (size_t i = 0; i < numThreads; ++i) {
+            m_workers.emplace_back([this] {
+                while (true) {
+                    std::function<void()> task;
+                    {
+                        std::unique_lock<std::mutex> lock(m_mutex);
+                        m_cv.wait(lock, [this] { return m_stop || !m_tasks.empty(); });
+                        if (m_stop && m_tasks.empty()) return;
+                        task = std::move(m_tasks.front());
+                        m_tasks.pop();
+                    }
+                    task();
+                }
+            });
+        }
+    }
+
+    ~ThreadPool() {
+        {
+            std::unique_lock<std::mutex> lock(m_mutex);
+            m_stop = true;
+        }
+        m_cv.notify_all();
+        for (std::thread& worker : m_workers) {
+            if (worker.joinable()) worker.join();
+        }
+    }
+
+    template<typename F, typename... Args>
+    auto enqueue(F&& f, Args&&... args) -> std::future<typename std::invoke_result_t<F, Args...>> {
+        using return_type = typename std::invoke_result_t<F, Args...>;
+        auto task = std::make_shared<std::packaged_task<return_type()>>(
+            std::bind(std::forward<F>(f), std::forward<Args>(args)...)
+        );
+        std::future<return_type> res = task->get_future();
+        {
+            std::unique_lock<std::mutex> lock(m_mutex);
+            if (m_stop) throw std::runtime_error("enqueue on stopped ThreadPool");
+            m_tasks.emplace([task]() { (*task)(); });
+        }
+        m_cv.notify_one();
+        return res;
+    }
+
+private:
+    std::vector<std::thread> m_workers;
+    std::queue<std::function<void()>> m_tasks;
+    std::mutex m_mutex;
+    std::condition_variable m_cv;
+    std::atomic<bool> m_stop{false};
+};
+
+} // namespace arxglue
+
+===
+.\src\types\type_system.hpp
+===
+// src/types/type_system.hpp
+#pragma once
+#include <any>
+#include <typeindex>
+#include <functional>
+#include <unordered_map>
+#include <stdexcept>
+#include <iostream>
+#include <memory>
+
+namespace arxglue::render {
+    class Texture;
+    class Mesh;
+    class Material;
+    class Scene;
+    class Camera;
+}
+
+namespace arxglue {
+
+enum class TypeId : uint32_t {
+    Unknown = 0,
+    Int,
+    Float,
+    String,
+    Texture,
+    Mesh,
+    Material,
+    Scene,
+    Camera
+};
+
+struct PairHash {
+    template<typename T1, typename T2>
+    std::size_t operator()(const std::pair<T1, T2>& p) const {
+        auto h1 = std::hash<T1>{}(p.first);
+        auto h2 = std::hash<T2>{}(p.second);
+        return h1 ^ (h2 << 1);
+    }
+};
+
+class TypeSystem {
+public:
+    static TypeSystem& instance() {
+        static TypeSystem inst;
+        return inst;
+    }
+
+    void registerType(TypeId id, const std::type_index& stdType, TypeId parent = TypeId::Unknown) {
+        m_typeInfo.emplace(id, TypeInfo(stdType, parent));
+        m_typeToId[stdType] = id;
+    }
+
+    TypeId getTypeId(const std::type_index& type) const {
+        auto it = m_typeToId.find(type);
+        if (it != m_typeToId.end()) return it->second;
+        return TypeId::Unknown;
+    }
+
+    bool canConvert(TypeId from, TypeId to) const {
+        if (from == to) return true;
+        auto it = m_typeInfo.find(from);
+        if (it == m_typeInfo.end()) return false;
+        TypeId cur = it->second.parent;
+        while (cur != TypeId::Unknown) {
+            if (cur == to) return true;
+            auto pit = m_typeInfo.find(cur);
+            if (pit == m_typeInfo.end()) break;
+            cur = pit->second.parent;
+        }
+        return m_converters.find({from, to}) != m_converters.end();
+    }
+
+    std::any convert(const std::any& value, TypeId from, TypeId to) const {
+        if (from == to) return value;
+        auto key = std::make_pair(from, to);
+        auto it = m_converters.find(key);
+        if (it != m_converters.end()) {
+            return it->second(value);
+        }
+        auto infoIt = m_typeInfo.find(from);
+        if (infoIt != m_typeInfo.end() && infoIt->second.parent != TypeId::Unknown) {
+            return convert(value, infoIt->second.parent, to);
+        }
+        throw std::runtime_error("No conversion available from type " + std::to_string(static_cast<int>(from)) +
+                                 " to " + std::to_string(static_cast<int>(to)));
+    }
+
+    std::any convertTo(const std::any& value, const std::type_index& targetType) const {
+        TypeId fromId = getTypeId(value.type());
+        TypeId toId = getTypeId(targetType);
+        if (fromId == TypeId::Unknown || toId == TypeId::Unknown) {
+            throw std::runtime_error("Unknown type(s) in conversion");
+        }
+        return convert(value, fromId, toId);
+    }
+
+    void registerConverter(TypeId from, TypeId to, std::function<std::any(const std::any&)> conv) {
+        m_converters[{from, to}] = std::move(conv);
+    }
+
+    std::type_index getStdTypeIndex(TypeId id) const {
+        auto it = m_typeInfo.find(id);
+        if (it != m_typeInfo.end()) return it->second.stdType;
+        return typeid(void);
+    }
+
+    static bool compareAny(const std::any& a, const std::any& b) {
+        if (!a.has_value() && !b.has_value()) return true;
+        if (!a.has_value() || !b.has_value()) return false;
+        if (std::type_index(a.type()) != std::type_index(b.type())) return false;
+        const std::type_info& ti = a.type();
+        if (ti == typeid(int)) {
+            return std::any_cast<int>(a) == std::any_cast<int>(b);
+        } else if (ti == typeid(float)) {
+            return std::any_cast<float>(a) == std::any_cast<float>(b);
+        } else if (ti == typeid(std::string)) {
+            return std::any_cast<std::string>(a) == std::any_cast<std::string>(b);
+        } else if (ti == typeid(bool)) {
+            return std::any_cast<bool>(a) == std::any_cast<bool>(b);
+        }
+        return false; // для сложных типов считаем разными
+    }
+
+
+
+private:
+    struct TypeInfo {
+        std::type_index stdType;
+        TypeId parent;
+        TypeInfo(const std::type_index& t, TypeId p) : stdType(t), parent(p) {}
+    };
+
+    std::unordered_map<TypeId, TypeInfo> m_typeInfo;
+    std::unordered_map<std::type_index, TypeId> m_typeToId;
+    std::unordered_map<std::pair<TypeId, TypeId>, std::function<std::any(const std::any&)>, PairHash> m_converters;
+};
+
+inline void initBasicTypes() {
+    auto& ts = TypeSystem::instance();
+    ts.registerType(TypeId::Int, typeid(int));
+    ts.registerType(TypeId::Float, typeid(float));
+    ts.registerType(TypeId::String, typeid(std::string));
+    ts.registerType(TypeId::Texture, typeid(std::shared_ptr<class TextureAsset>));
+    ts.registerType(TypeId::Mesh, typeid(std::shared_ptr<class MeshAsset>));
+    ts.registerType(TypeId::Texture, typeid(std::shared_ptr<render::Texture>));
+    ts.registerType(TypeId::Mesh, typeid(std::shared_ptr<render::Mesh>));
+    ts.registerType(TypeId::Material, typeid(std::shared_ptr<render::Material>));
+    ts.registerType(TypeId::Scene, typeid(std::shared_ptr<render::Scene>));
+    ts.registerType(TypeId::Camera, typeid(std::shared_ptr<render::Camera>));
+
+    ts.registerConverter(TypeId::Int, TypeId::Float, [](const std::any& v) -> std::any {
+        return static_cast<float>(std::any_cast<int>(v));
+    });
+    ts.registerConverter(TypeId::Float, TypeId::Int, [](const std::any& v) -> std::any {
+        return static_cast<int>(std::any_cast<float>(v));
+    });
+}
+
+} // namespace arxglue
+
+< | end of headers | >
+
+< | documentation | >
 3Tone Engine – Документация проекта
 Введение
 3Tone — это амбициозный проект по созданию игрового движка и среды разработки, вдохновлённый архитектурой Werkkzeug4 (инструментарий демосцены) и декларативным протоколом композиции компонентов ArxGlue. Основная идея: объединить процедурную генерацию контента (узлы-генераторы, граф вычислений) с традиционными ассетами (модели, текстуры, анимации) в единую гибкую парадигму, где разработчик может на лету смешивать префабы и процедурные данные, а также «запекать» результаты в ассеты для финального билда.
@@ -11,6 +2043,50 @@
 Гибридный пайплайн – ассеты и генераторы живут в одном графе, поддерживается «запечка» подграфов в ассеты.
 Кроссплатформенность – код на C++ 20, с возможностью использования Vulkan/Metal/DirectX 12 через абстракцию.
 Цель документа – зафиксировать архитектурные решения, протоколы и планы разработки, чтобы превратить разрозненные идеи в работающий движок.
+Оглавление
+Архитектура ядра
+1.1. Компоненты (узлы)
+1.2. Контекст выполнения
+1.3. Соединения и ветвление
+1.4. Граф и исполнитель
+1.5. Система типов и конвертации
+1.6. Кэширование и «ленивые» вычисления
+Протокол ArxGlue (C++ реализация)
+2.1. Контекст (Context)
+2.2. Компонент как std::function
+2.3. Соединения с несколькими целями
+2.4. Базовый граф последовательного выполнения
+Интеграция с ассетами
+3.1. Узлы-загрузчики (LoadTexture, LoadMesh)
+3.2. Узлы-контейнеры (AssetNode)
+3.3. Смешивание генераторов и ассетов
+3.4. «Запечка» (Bake) подграфа в ассет
+Граф вычислений (вдохновлённый Werkkzeug4)
+4.1. Типы узлов (генераторы, фильтры, композиты)
+4.2. Топологическая сортировка и обновление зависимостей
+4.3. Многопоточный исполнитель (планировщик задач)
+4.4. Сериализация графа (JSON / бинарный протокол)
+Рендеринг и представление данных
+5.1. Абстрактный графический слой (Vulkan/DirectX 12/Metal)
+5.2. Узлы вывода (RenderScene, RenderToTexture)
+5.3. Визуализация графа в редакторе (интеграция с ImGui или Qt)
+Инструменты разработчика
+6.1. Редактор графа (Node Editor)
+6.2. Отладчик (пошаговое выполнение, просмотр значений)
+6.3. Профилирование производительности узлов
+6.4. Экспорт ассетов и «запечка» для релиза
+Дорожная карта
+7.1. Этап 1: Ядро графа и протокол (C++17, однопоточный исполнитель)
+7.2. Этап 2: Система типов и сериализация
+7.3. Этап 3: Интеграция ассетов и «запечка»
+7.4. Этап 4: Многопоточный исполнитель
+7.5. Этап 5: Графический бэкенд и рендеринг
+7.6. Этап 6: Редактор (ImGui/Qt)
+Примеры использования
+8.1. Процедурная текстура через граф
+8.2. Смешивание загруженной модели с генератором шума
+8.3. «Запечка» сложного подграфа в ассет
+Заключение и ссылки
 
 1. Архитектура ядра
 1.1. Компоненты (узлы)
@@ -1137,22 +3213,18 @@ BlurNode внутри использует функциональный комп
 9.9. Заключение
 Архитектура 3tone предоставляет уникальную гибкость за счёт сочетания объектно-ориентированных узлов и функциональных компонентов. Вложенность графов не ограничена, а контексты позволяют безопасно изолировать подвычисления или, наоборот, организовать сквозную передачу данных. Эти возможности делают движок мощным инструментом для построения процедурных генераторов, систем визуального программирования и других приложений, где требуется гибкая композиция вычислительных блоков.
 
-Дополнительные примеры кода можно найти в файле main.cpp (практические тесты) и main_experiments.cpp (исследовательские тесты) в репозитории проекта.
-
-
-
+Дополнительные примеры кода можно найти в файле mainlev2.cpp (практические тесты) и mainlevels.cpp (исследовательские тесты) в репозитории проекта.
 < | end of documentation | > 
 
 < | agent context | > 
-Изучи документацию по проекту 3Tone (documentation) и текущий код (source code) 
+Изучи документацию по проекту 3Tone (documentation) и текущий код (source code, source headers) 
 
-Ты как ИИ агент будешь отвечать за разработку проекта как единственный разработчик, пользователь проверяет и запускает код, сохраняет готовый результат вручную коммитами на гитхабе. 
+Ты как ИИ агент будешь отвечать за разработку проекта как единственный разработчик, пользователь проверяет и запускает код, сохраняет готовый результат вручную коммитами на гитхабе, он не знает и не умеет писать код, его роль ПМ и интеграция готового кода. 
 Среда разработки: win11 сборщик: CMake. 
 
 Код представляй организованый с прописыванием адреса от корневой папки. к файлу с кодом. 
-Запрещено писать заглушки, коментарии вида //в реальном проекте тут должна быть реализация, делать упрощенные реализации. Каждая функция должна быть реализована ЭТАЛОННО и ПОЛНО в соответствии с ТЗ (documentation) . 
+Запрещено писать заглушки, коментарии вида "//в реальном проекте тут должна быть реализация", "//для учебного проекта сойдет", "//упростим для демонстрации", вставлять огромные блоки с комментариями в несколько строк с размышлениями и т.д., а также делать упрощенные реализации. Каждая функция должна быть реализована ЭТАЛОННО и ПОЛНО в соответствии с ТЗ (documentation).
+Это первый пакет информации
+Всего 2 пакета
+1\2
 < | end of context | > 
-
-<|task|> 
-Нам надосгенерировать пользовательскую документацию для людей собирающихся работать с 3Tone
-<|end|>

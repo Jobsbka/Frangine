@@ -64,7 +64,7 @@ private:
     bool m_moveLeft = false;
     bool m_moveRight = false;
 
-    // Процедурная генерация (теперь однопоточная)
+    // Процедурная генерация (однопоточная)
     std::mt19937 m_rng;
     std::atomic<bool> m_genRequested{false};
 
