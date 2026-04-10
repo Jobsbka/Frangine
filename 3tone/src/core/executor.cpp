@@ -7,6 +7,10 @@
 namespace arxglue {
 
 Executor::Executor(size_t numThreads) {
+    if (numThreads == 0) {
+        m_synchronous = true;
+        return;
+    }
     if (numThreads == 0) numThreads = std::thread::hardware_concurrency();
     if (numThreads == 0) numThreads = 1;
     m_pool = std::make_unique<ThreadPool>(numThreads);
@@ -49,7 +53,51 @@ void Executor::execute(Graph& graph, Context& ctx, const std::vector<NodeId>& ro
         if (reachable.count(id)) sortedReachable.push_back(id);
     }
 
-    // Инициализация синхронизирующих объектов
+    if (m_synchronous) {
+        // Синхронное выполнение в текущем потоке
+        for (NodeId id : sortedReachable) {
+            INode* node = graph.getNode(id);
+            if (!node) continue;
+
+            // Копируем входы от предшественников
+            {
+                std::unique_lock lock(ctx.stateMutex);
+                for (const auto& conn : graph.getConnections()) {
+                    if (conn.dstNode == id) {
+                        INode* srcNode = graph.getNode(conn.srcNode);
+                        if (srcNode) {
+                            std::any value = srcNode->getCachedOutput();
+                            if (value.has_value()) {
+                                std::string inKey = "in_" + std::to_string(id) + "_" + std::to_string(conn.dstPort);
+                                ctx.state[inKey] = value;
+                            }
+                        }
+                    }
+                }
+            }
+
+            const auto& metadata = node->getMetadata();
+            bool needExecute = true;
+            std::any cached = node->getCachedOutput();
+            if (!metadata.volatile_ && !node->isDirty() && cached.has_value()) {
+                if (!node->areInputsChanged(ctx) && !node->areParametersChanged()) {
+                    needExecute = false;
+                }
+            }
+
+            if (needExecute) {
+                node->execute(ctx);
+                node->setCachedOutput(ctx.output);
+                node->setDirty(false);
+                node->updateLastInputs(ctx);
+            } else {
+                ctx.output = cached;
+            }
+        }
+        return;
+    }
+
+    // Параллельное выполнение (существующий код)
     {
         std::lock_guard<std::mutex> lock(m_syncMutex);
         m_syncMap.clear();
@@ -60,7 +108,6 @@ void Executor::execute(Graph& graph, Context& ctx, const std::vector<NodeId>& ro
         }
     }
 
-    // Запуск узлов без зависимостей (с защитой от двойного запуска)
     for (NodeId id : sortedReachable) {
         if (graph.getDependencies(id).empty()) {
             auto it = m_syncMap.find(id);
@@ -70,7 +117,6 @@ void Executor::execute(Graph& graph, Context& ctx, const std::vector<NodeId>& ro
         }
     }
 
-    // Ожидание завершения корневых узлов
     std::vector<std::shared_future<void>> rootFutures;
     {
         std::lock_guard<std::mutex> lock(m_syncMutex);
@@ -96,10 +142,8 @@ void Executor::executeNodeAsync(NodeId id) {
         return;
     }
 
-    // Ждём завершения всех предшественников
     waitForDependencies(id);
 
-    // Копируем выходы предшественников во входные ключи данного узла
     {
         std::unique_lock lock(m_ctx->stateMutex);
         for (const auto& conn : m_graph->getConnections()) {
@@ -134,7 +178,6 @@ void Executor::executeNodeAsync(NodeId id) {
         m_ctx->output = cached;
     }
 
-    // Сигнализируем о завершении узла
     {
         auto it = m_syncMap.find(id);
         if (it != m_syncMap.end()) {
@@ -142,7 +185,6 @@ void Executor::executeNodeAsync(NodeId id) {
         }
     }
 
-    // Планируем выполнение зависимых узлов
     tryScheduleDependents(id);
 }
 
@@ -186,7 +228,6 @@ std::shared_future<void> Executor::getFuture(NodeId id) {
 void Executor::invalidate(NodeId id) {
     if (m_graph) {
         m_graph->invalidateSubgraph(id);
-        // Сбрасываем состояние scheduled для затронутых узлов в текущей syncMap
         std::lock_guard<std::mutex> lock(m_syncMutex);
         std::queue<NodeId> q;
         std::unordered_set<NodeId> visited;
@@ -198,7 +239,6 @@ void Executor::invalidate(NodeId id) {
             auto it = m_syncMap.find(cur);
             if (it != m_syncMap.end()) {
                 it->second->scheduled = false;
-                // Сбрасываем future для возможности повторного ожидания
                 it->second->promise = std::promise<void>();
                 it->second->future = it->second->promise.get_future().share();
             }

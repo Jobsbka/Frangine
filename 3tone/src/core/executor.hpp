@@ -20,6 +20,7 @@ public:
 
 private:
     std::unique_ptr<ThreadPool> m_pool;
+    bool m_synchronous = false;   // <-- добавить
     Graph* m_graph = nullptr;
     Context* m_ctx = nullptr;
 
@@ -32,6 +33,7 @@ private:
     std::mutex m_syncMutex;
 
     void executeNodeAsync(NodeId id);
+    void executeNodeSync(NodeId id);   // <-- добавить
     void waitForDependencies(NodeId id);
     std::shared_future<void> getFuture(NodeId id);
     void tryScheduleDependents(NodeId id);

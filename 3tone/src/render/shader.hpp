@@ -1,3 +1,4 @@
+// src/render/shader.hpp
 #pragma once
 
 #include <string>
@@ -23,15 +24,16 @@ public:
     void setUniform1f(const std::string& name, float value);
     void setUniformMat4(const std::string& name, const float* mat4);
     void setUniform3fv(const std::string& name, const float* vec3);
+    void setUniform4fv(const std::string& name, const float* vec4);
 
     GLuint getHandle() const { return m_program; }
+    GLint getUniformLocation(const std::string& name) const;
 
 private:
     GLuint m_program = 0;
     mutable std::unordered_map<std::string, GLint> m_uniformCache;
 
-    GLuint compileShader(GLenum type, const std::string& source);
-    GLint getUniformLocation(const std::string& name) const;
+    GLuint compileShader(GLenum type, const std::string& source, std::string& outError);
 };
 
 } // namespace arxglue::render
