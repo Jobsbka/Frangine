@@ -2,7 +2,6 @@
 #include "executor.hpp"
 #include <unordered_set>
 #include <queue>
-#include <chrono>
 #include <iostream>
 
 namespace arxglue {
@@ -17,7 +16,6 @@ void Executor::execute(Graph& graph, Context& ctx, const std::vector<NodeId>& ro
     m_graph = &graph;
     m_ctx = &ctx;
 
-    // Получаем топологический порядок всех узлов
     std::vector<NodeId> allNodes;
     try {
         allNodes = graph.topologicalSort();
@@ -26,9 +24,8 @@ void Executor::execute(Graph& graph, Context& ctx, const std::vector<NodeId>& ro
         return;
     }
 
-    // Если заданы корневые узлы, оставляем только достижимые от них
+    std::unordered_set<NodeId> reachable;
     if (!rootNodes.empty()) {
-        std::unordered_set<NodeId> reachable;
         std::queue<NodeId> q;
         for (NodeId r : rootNodes) {
             q.push(r);
@@ -43,94 +40,66 @@ void Executor::execute(Graph& graph, Context& ctx, const std::vector<NodeId>& ro
                 }
             }
         }
-        std::vector<NodeId> filtered;
-        for (NodeId n : allNodes) {
-            if (reachable.count(n)) {
-                filtered.push_back(n);
-            }
-        }
-        allNodes = std::move(filtered);
+    } else {
+        for (NodeId id : allNodes) reachable.insert(id);
     }
 
-    // Строим карты зависимостей
-    std::unordered_map<NodeId, int> depCount;
-    std::unordered_map<NodeId, std::vector<NodeId>> dependents;
-
+    std::vector<NodeId> sortedReachable;
     for (NodeId id : allNodes) {
-        depCount[id] = 0;
-        dependents[id] = {};
+        if (reachable.count(id)) sortedReachable.push_back(id);
     }
 
-    for (NodeId id : allNodes) {
-        for (NodeId dep : graph.getDependencies(id)) {
-            if (depCount.find(dep) != depCount.end()) {
-                depCount[id]++;
-                dependents[dep].push_back(id);
-            }
-        }
-    }
-
-    // Очередь готовых узлов
-    std::queue<NodeId> readyQueue;
-    std::mutex queueMutex;
-    std::condition_variable cv;
-    std::atomic<int> tasksRemaining(static_cast<int>(allNodes.size()));
-
-    for (const auto& pair : depCount) {
-        if (pair.second == 0) {
-            readyQueue.push(pair.first);
-        }
-    }
-
-    // Обработчик одного узла (вызывается в пуле)
-    auto processNode = [this, &depCount, &dependents, &readyQueue, &queueMutex, &cv, &tasksRemaining](NodeId id) {
-        try {
-            executeNode(id);
-        } catch (const std::exception& e) {
-            std::cerr << "Exception in node " << id << ": " << e.what() << std::endl;
-        }
-
-        int remaining = --tasksRemaining;
-
-        {
-            std::lock_guard<std::mutex> lock(queueMutex);
-            for (NodeId child : dependents[id]) {
-                int& cnt = depCount[child];
-                if (--cnt == 0) {
-                    readyQueue.push(child);
-                }
-            }
-        }
-        cv.notify_one();
-
-        if (remaining == 0) {
-            cv.notify_all();
-        }
-    };
-
-    // Диспетчеризация
+    // Инициализация синхронизирующих объектов
     {
-        std::unique_lock<std::mutex> lock(queueMutex);
-        while (tasksRemaining > 0) {
-            while (!readyQueue.empty()) {
-                NodeId id = readyQueue.front();
-                readyQueue.pop();
-                m_pool->enqueue([processNode, id]() {
-                    processNode(id);
-                });
-            }
-            if (tasksRemaining > 0) {
-                cv.wait(lock);
+        std::lock_guard<std::mutex> lock(m_syncMutex);
+        m_syncMap.clear();
+        for (NodeId id : sortedReachable) {
+            auto sync = std::make_unique<NodeSync>();
+            sync->future = sync->promise.get_future().share();
+            m_syncMap[id] = std::move(sync);
+        }
+    }
+
+    // Запуск узлов без зависимостей (с защитой от двойного запуска)
+    for (NodeId id : sortedReachable) {
+        if (graph.getDependencies(id).empty()) {
+            auto it = m_syncMap.find(id);
+            if (it != m_syncMap.end() && !it->second->scheduled.exchange(true)) {
+                m_pool->enqueue([this, id] { executeNodeAsync(id); });
             }
         }
+    }
+
+    // Ожидание завершения корневых узлов
+    std::vector<std::shared_future<void>> rootFutures;
+    {
+        std::lock_guard<std::mutex> lock(m_syncMutex);
+        for (NodeId r : rootNodes) {
+            auto it = m_syncMap.find(r);
+            if (it != m_syncMap.end()) {
+                rootFutures.push_back(it->second->future);
+            }
+        }
+    }
+    for (auto& fut : rootFutures) {
+        fut.wait();
     }
 }
 
-void Executor::executeNode(NodeId id) {
+void Executor::executeNodeAsync(NodeId id) {
     INode* node = m_graph->getNode(id);
-    if (!node) return;
+    if (!node) {
+        auto it = m_syncMap.find(id);
+        if (it != m_syncMap.end()) {
+            it->second->promise.set_value();
+        }
+        return;
+    }
 
-    // 1. Сбор входных значений: копируем из кэшей предшественников в state под защитой unique_lock
+    // Ждём завершения всех предшественников
+    waitForDependencies(id);
+
+    // Копируем выходы предшественников во входные ключи данного узла
     {
         std::unique_lock lock(m_ctx->stateMutex);
         for (const auto& conn : m_graph->getConnections()) {
@@ -139,7 +108,7 @@ void Executor::executeNode(NodeId id) {
                 if (srcNode) {
                     std::any value = srcNode->getCachedOutput();
                     if (value.has_value()) {
-                        std::string inKey = "in_" + std::to_string(id) + "_" + std::to_string(static_cast<int>(conn.dstPort));
+                        std::string inKey = "in_" + std::to_string(id) + "_" + std::to_string(conn.dstPort);
                         m_ctx->state[inKey] = value;
                     }
                 }
@@ -147,7 +116,6 @@ void Executor::executeNode(NodeId id) {
         }
     }
 
-    // 2. Проверка необходимости выполнения (чтение state происходит внутри areInputsChanged, который теперь использует shared_lock)
     bool needExecute = true;
     const auto& metadata = node->getMetadata();
     std::any cached = node->getCachedOutput();
@@ -157,9 +125,8 @@ void Executor::executeNode(NodeId id) {
         }
     }
 
-    // 3. Выполнение или восстановление
     if (needExecute) {
-        node->execute(*m_ctx); // внутри узлы используют getInputValue/setOutputValue с блокировками
+        node->execute(*m_ctx);
         node->setCachedOutput(m_ctx->output);
         node->setDirty(false);
         node->updateLastInputs(*m_ctx);
@@ -167,13 +134,79 @@ void Executor::executeNode(NodeId id) {
         m_ctx->output = cached;
     }
 
-    // 4. Сохранение выходов (уже делается внутри setOutputValue, но на всякий случай можно оставить для out_ ключей)
-    // Фактически узлы сами вызывают setOutputValue, который пишет out_ ключи. 
-    // Дополнительно ничего не нужно.
+    // Сигнализируем о завершении узла
+    {
+        auto it = m_syncMap.find(id);
+        if (it != m_syncMap.end()) {
+            it->second->promise.set_value();
+        }
+    }
+
+    // Планируем выполнение зависимых узлов
+    tryScheduleDependents(id);
+}
+
+void Executor::tryScheduleDependents(NodeId id) {
+    for (NodeId dep : m_graph->getDependents(id)) {
+        bool allDepsReady = true;
+        for (NodeId pred : m_graph->getDependencies(dep)) {
+            auto fut = getFuture(pred);
+            if (fut.valid() && fut.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+                allDepsReady = false;
+                break;
+            }
+        }
+        if (allDepsReady) {
+            auto it = m_syncMap.find(dep);
+            if (it != m_syncMap.end() && !it->second->scheduled.exchange(true)) {
+                m_pool->enqueue([this, dep] { executeNodeAsync(dep); });
+            }
+        }
+    }
+}
+
+void Executor::waitForDependencies(NodeId id) {
+    for (NodeId pred : m_graph->getDependencies(id)) {
+        auto fut = getFuture(pred);
+        if (fut.valid()) {
+            fut.wait();
+        }
+    }
+}
+
+std::shared_future<void> Executor::getFuture(NodeId id) {
+    std::lock_guard<std::mutex> lock(m_syncMutex);
+    auto it = m_syncMap.find(id);
+    if (it != m_syncMap.end()) {
+        return it->second->future;
+    }
+    return {};
 }
 
 void Executor::invalidate(NodeId id) {
-    if (m_graph) m_graph->invalidateSubgraph(id);
+    if (m_graph) {
+        m_graph->invalidateSubgraph(id);
+        // Сбрасываем состояние scheduled для затронутых узлов в текущей syncMap
+        std::lock_guard<std::mutex> lock(m_syncMutex);
+        std::queue<NodeId> q;
+        std::unordered_set<NodeId> visited;
+        q.push(id);
+        while (!q.empty()) {
+            NodeId cur = q.front(); q.pop();
+            if (visited.count(cur)) continue;
+            visited.insert(cur);
+            auto it = m_syncMap.find(cur);
+            if (it != m_syncMap.end()) {
+                it->second->scheduled = false;
+                // Сбрасываем future для возможности повторного ожидания
+                it->second->promise = std::promise<void>();
+                it->second->future = it->second->promise.get_future().share();
+            }
+            for (NodeId dep : m_graph->getDependents(cur)) {
+                q.push(dep);
+            }
+        }
+    }
 }
 
 } // namespace arxglue

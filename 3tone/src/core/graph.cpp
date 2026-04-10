@@ -143,7 +143,8 @@ void Graph::invalidateSubgraph(NodeId root) {
         INode* node = getNode(id);
         if (node) {
             node->setDirty(true);
-            node->clearLastInputs();   
+            node->setCachedOutput({});     // сброс кэша выхода
+            node->clearLastInputs();
         }
         for (NodeId dep : getDependents(id)) {
             q.push(dep);
