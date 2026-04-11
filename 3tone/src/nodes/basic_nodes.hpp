@@ -6,6 +6,8 @@
 #include <thread>
 #include <mutex>
 #include <chrono>
+#include <string_view>   // <-- добавить
+#include <type_traits>   // <-- добавить
 
 namespace arxglue {
 
@@ -30,7 +32,7 @@ public:
     void setParameter(const std::string& name, const std::any& value) override {
         if (name == "value") {
             m_value = std::any_cast<T>(value);
-            setDirty(true); // <-- добавить
+            setDirty(true);
         }
     }
 
@@ -58,7 +60,12 @@ public:
 
 protected:
     size_t computeParamsHash() const override {
-        return std::hash<T>{}(m_value);
+        if constexpr (std::is_trivially_copyable_v<T>) {
+            std::string_view bytes(reinterpret_cast<const char*>(&m_value), sizeof(T));
+            return std::hash<std::string_view>{}(bytes);
+        } else {
+            return 0;
+        }
     }
 
 private:
