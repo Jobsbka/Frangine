@@ -17,7 +17,7 @@ FetchContent_MakeAvailable(glfw)
 # Исполняемый файл со всеми исходниками
 add_executable(3tone
     src/main.cpp
-    src/glad.c                         # OpenGL loader
+    src/glad.c
     src/core/graph.cpp
     src/nodes/text_texture_node.cpp
     src/core/executor.cpp
@@ -39,6 +39,9 @@ add_executable(3tone
     src/render/command_buffer.cpp
     src/render/render_target.cpp
     src/game/Game.cpp
+    src/ui/input_manager.cpp
+    src/ui/ui_nodes.cpp
+    src/ui/ui_render_node.cpp
 )
 
 # Директории с заголовочными файлами

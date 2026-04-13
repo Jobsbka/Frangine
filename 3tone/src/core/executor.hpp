@@ -1,7 +1,7 @@
 // src/core/executor.hpp
 #pragma once
 #include "graph.hpp"
-#include "../threading/thread_pool.hpp"
+#include "thread_pool.hpp"  
 #include <atomic>
 #include <memory>
 #include <mutex>
