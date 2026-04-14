@@ -1,12 +1,11 @@
-#include "graph.hpp"
-#include "executor.hpp"
-#include "../types/type_system.hpp"
+#include "core_module.hpp"
+#include "type_system.hpp"
 #include "../nodes/node_factory.hpp"
-#include "../nodes/basic_nodes.hpp"
-#include "../nodes/convert_node.hpp"
-#include "../nodes/asset_node.hpp"
-#include "../nodes/checker_texture.hpp"
-#include "../nodes/text_texture_node.hpp"
+#include "../nodes/coren/basic_nodes.hpp"
+#include "../nodes/coren/convert_node.hpp"
+#include "../nodes/coren/asset_node.hpp"
+#include "../nodes/coren/checker_texture.hpp"
+#include "../nodes/coren/text_texture_node.hpp"
 
 namespace arxglue::core {
 

@@ -1,11 +1,11 @@
 // src/core/graph.cpp
 #include "graph.hpp"
 #include "../nodes/node_factory.hpp"
-#include "../nodes/convert_node.hpp"
-#include "../types/type_system.hpp"
+#include "../nodes/coren/convert_node.hpp"
+#include "type_system.hpp"
 #include <queue>
 #include <algorithm>
-#include <unordered_set> 
+#include <unordered_set>
 #include <stdexcept>
 
 namespace arxglue {

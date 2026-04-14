@@ -2,6 +2,7 @@
 #include "executor.hpp"
 #include <unordered_set>
 #include <queue>
+#include <chrono>
 #include <iostream>
 
 namespace arxglue {

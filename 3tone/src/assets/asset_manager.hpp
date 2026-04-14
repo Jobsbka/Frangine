@@ -1,4 +1,5 @@
 #pragma once
+
 #include <any>
 #include <string>
 #include <unordered_map>
@@ -8,8 +9,7 @@
 #include <vector>
 #include <cstdint>
 #include <algorithm>
-
-// Заголовки stb (реализация будет в отдельном .cpp)
+#include <typeindex>
 #include "stb_image.h"
 #include "stb_image_write.h"
 

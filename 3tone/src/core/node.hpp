@@ -1,7 +1,7 @@
 // src/core/node.hpp
 #pragma once
 #include "arxglue.hpp"
-#include "../types/type_system.hpp"
+#include "type_system.hpp"
 #include <nlohmann/json.hpp>
 #include <memory>
 #include <vector>

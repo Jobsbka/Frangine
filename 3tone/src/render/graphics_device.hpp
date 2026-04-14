@@ -1,14 +1,14 @@
 #pragma once
-
+#include <glad/glad.h>
 #define GLFW_INCLUDE_NONE
+#include <GLFW/glfw3.h>
 #include <memory>
 #include <string>
 #include <functional>
 #include <any>
 #include <unordered_map>
 #include <mutex>
-#include <GLFW/glfw3.h>
-#include <glad/glad.h>
+
 
 namespace arxglue::render {
 

@@ -1,6 +1,5 @@
-// src/ui/input_manager.hpp
 #pragma once
-
+#define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #include <array>
 #include <unordered_map>

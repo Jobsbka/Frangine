@@ -1,6 +1,6 @@
 #include "baking.hpp"
 #include "executor.hpp"
-#include "../nodes/asset_node.hpp"
+#include "../nodes/coren/asset_node.hpp"
 #include "../nodes/node_factory.hpp"
 #include "../assets/asset_manager.hpp"
 #include <unordered_set>

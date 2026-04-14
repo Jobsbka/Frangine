@@ -1,5 +1,4 @@
 #pragma once
-
 #include <memory>
 #include "texture.hpp"
 #include <glad/glad.h>

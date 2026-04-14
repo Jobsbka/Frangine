@@ -1,6 +1,4 @@
-// src/render/shader.hpp
 #pragma once
-
 #include <string>
 #include <unordered_map>
 #include <glad/glad.h>

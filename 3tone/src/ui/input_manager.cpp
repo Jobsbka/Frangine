@@ -1,6 +1,5 @@
-// src/ui/input_manager.cpp
 #include "input_manager.hpp"
-#include "../arxglue.hpp"
+#include "../core/context.hpp"
 #include <iostream>
 
 namespace arxglue::ui {

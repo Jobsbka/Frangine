@@ -1,8 +1,8 @@
 #pragma once
-
 #include <vector>
 #include <cstdint>
 #include <glad/glad.h>
+
 
 namespace arxglue::render {
 
