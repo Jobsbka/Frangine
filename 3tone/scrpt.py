@@ -4,6 +4,7 @@
 """
 Скрипт для построения структуры папок (и файлов) в виде дерева.
 Сохраняет результат в текстовый файл.
+Игнорируемые элементы задаются списком в коде (переменная IGNORE_NAMES).
 """
 
 import os
@@ -11,7 +12,15 @@ import sys
 import argparse
 from pathlib import Path
 
-def write_tree_structure(start_path, output_file, include_files=True, max_depth=None, prefix=""):
+# ========== НАСТРОЙКИ ИГНОРИРОВАНИЯ (меняйте здесь) ==========
+IGNORE_NAMES = {
+    'build',
+    'docs'
+}
+# ===============================================================
+
+def write_tree_structure(start_path, output_file, include_files=True, max_depth=None,
+                         prefix="", ignore_names=None):
     """
     Рекурсивно записывает структуру каталога в файл.
     
@@ -21,12 +30,15 @@ def write_tree_structure(start_path, output_file, include_files=True, max_depth=
         include_files: включать ли файлы в вывод
         max_depth: максимальная глубина обхода (None - без ограничений)
         prefix: префикс для текущего уровня (используется в рекурсии)
+        ignore_names: множество имён (строк), которые следует игнорировать
     """
+    if ignore_names is None:
+        ignore_names = set()
+        
     if max_depth is not None and max_depth <= 0:
         return
     
     try:
-        # Получаем содержимое каталога и сортируем
         entries = sorted(os.listdir(start_path))
     except PermissionError:
         output_file.write(f"{prefix}[Нет доступа]\n")
@@ -37,7 +49,9 @@ def write_tree_structure(start_path, output_file, include_files=True, max_depth=
         output_file.write(f"{prefix}[Ошибка: {e}]\n")
         return
 
-    # Отделяем папки от файлов для правильного отображения дерева
+    # Фильтруем игнорируемые элементы
+    entries = [e for e in entries if e not in ignore_names]
+
     dirs = []
     files = []
     for entry in entries:
@@ -48,23 +62,21 @@ def write_tree_structure(start_path, output_file, include_files=True, max_depth=
             else:
                 files.append(entry)
         except PermissionError:
-            # Если не удаётся определить тип, считаем файлом (или просто игнорируем)
             files.append(entry)
     
-    # Сначала выводим папки
+    # Вывод папок
     for i, name in enumerate(dirs):
         is_last = (i == len(dirs) - 1 and not (include_files and files))
         connector = "└── " if is_last else "├── "
         output_file.write(f"{prefix}{connector}{name}/\n")
         
-        # Рекурсивный вызов для подпапки
         new_prefix = prefix + ("    " if is_last else "│   ")
         sub_path = os.path.join(start_path, name)
         write_tree_structure(sub_path, output_file, include_files,
                              None if max_depth is None else max_depth - 1,
-                             new_prefix)
+                             new_prefix, ignore_names)
     
-    # Затем выводим файлы (если требуется)
+    # Вывод файлов
     if include_files:
         for i, name in enumerate(files):
             is_last = (i == len(files) - 1)
@@ -102,7 +114,6 @@ def main():
     
     args = parser.parse_args()
     
-    # Преобразуем путь в абсолютный для удобства
     root_path = os.path.abspath(args.path)
     
     if not os.path.exists(root_path):
@@ -113,7 +124,6 @@ def main():
         print(f"Ошибка: '{root_path}' не является каталогом.")
         sys.exit(1)
     
-    # Запись в файл
     try:
         with open(args.output, "w", encoding="utf-8") as f:
             f.write(f"Структура каталога: {root_path}\n")
@@ -121,7 +131,8 @@ def main():
             write_tree_structure(
                 root_path, f,
                 include_files=not args.no_files,
-                max_depth=args.max_depth
+                max_depth=args.max_depth,
+                ignore_names=IGNORE_NAMES   # используем глобальный список
             )
         print(f"Структура успешно сохранена в файл: {args.output}")
     except Exception as e:

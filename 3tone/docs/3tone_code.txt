@@ -4389,6 +4389,688 @@ bool AudioAsset::saveWav(const std::string& path) const {
 
 } // namespace arxglue::sound
 
+===
+.\src\sound\audio_graph.cpp
+===
+#include "audio_graph.hpp"
+#include "../nodes/soundn/io_nodes.hpp"
+#include "../core/executor.hpp"
+#include "../core/context.hpp"
+#include <stdexcept>
+#include <chrono>
+#include <fstream>
+
+namespace arxglue::sound {
+
+AudioGraph::AudioGraph() = default;
+
+void AudioGraph::collectAudioNodes() {
+    m_audioNodes.clear();
+    // Получаем все узлы графа в топологическом порядке
+    std::vector<NodeId> sortedIds = topologicalSort();
+    for (NodeId id : sortedIds) {
+        INode* node = getNode(id);
+        if (auto* audioNode = dynamic_cast<AudioNode*>(node)) {
+            m_audioNodes.push_back(audioNode);
+        }
+    }
+}
+
+void AudioGraph::prepare(const AudioSpec& spec) {
+    m_spec = spec;
+    collectAudioNodes();
+    for (auto* node : m_audioNodes) {
+        node->prepare(spec);
+    }
+    m_prepared = true;
+}
+
+void AudioGraph::processBlock(AudioBuffer& output) {
+    if (!m_prepared) {
+        throw std::runtime_error("AudioGraph not prepared");
+    }
+
+    // Создаём контекст и помещаем в него выходной буфер
+    Context ctx;
+    ctx.output = std::shared_ptr<AudioBuffer>(&output, [](AudioBuffer*){}); // non-owning shared_ptr для совместимости
+
+    // Устанавливаем аудиоконтекст
+    AudioContextData audioCtx;
+    audioCtx.spec = m_spec;
+    audioCtx.isRealtime = true;
+    setAudioContextData(ctx, &audioCtx);
+
+    // Выполняем граф (предполагается, что узлы будут использовать ctx.output)
+    Executor executor(1); // в реальном времени используем один поток
+    executor.execute(*this, ctx, {});
+
+    // Если output был заменён внутри, копируем обратно
+    if (ctx.output.has_value() && ctx.output.type() == typeid(std::shared_ptr<AudioBuffer>)) {
+        auto bufPtr = std::any_cast<std::shared_ptr<AudioBuffer>>(ctx.output);
+        if (bufPtr.get() != &output) {
+            output = std::move(*bufPtr);
+        }
+    }
+}
+
+void AudioGraph::renderToFile(const std::string& path, double durationSeconds) {
+    if (!m_prepared) {
+        throw std::runtime_error("AudioGraph not prepared");
+    }
+
+    size_t totalFrames = static_cast<size_t>(m_spec.sampleRate * durationSeconds);
+    AudioBuffer fullBuffer(m_spec, totalFrames);
+    fullBuffer.clear();
+
+    size_t blockSize = m_spec.blockSize;
+    size_t numBlocks = totalFrames / blockSize;
+    size_t remainder = totalFrames % blockSize;
+
+    AudioBuffer blockBuffer(m_spec, blockSize);
+
+    // Создаём контекст для офлайн-рендеринга
+    Context ctx;
+    AudioContextData audioCtx;
+    audioCtx.spec = m_spec;
+    audioCtx.isRealtime = false;
+    setAudioContextData(ctx, &audioCtx);
+
+    Executor executor(1);
+
+    for (size_t b = 0; b < numBlocks; ++b) {
+        blockBuffer.clear();
+        ctx.output = std::shared_ptr<AudioBuffer>(&blockBuffer, [](AudioBuffer*){});
+        executor.execute(*this, ctx, {});
+
+        if (ctx.output.has_value() && ctx.output.type() == typeid(std::shared_ptr<AudioBuffer>)) {
+            auto bufPtr = std::any_cast<std::shared_ptr<AudioBuffer>>(ctx.output);
+            if (bufPtr.get() != &blockBuffer) {
+                blockBuffer = std::move(*bufPtr);
+            }
+        }
+
+        // Копируем блок в полный буфер
+        float* dest = fullBuffer.data() + b * blockSize * m_spec.numChannels;
+        const float* src = blockBuffer.data();
+        std::copy_n(src, blockSize * m_spec.numChannels, dest);
+    }
+
+    if (remainder > 0) {
+        AudioBuffer remBuffer(m_spec, remainder);
+        remBuffer.clear();
+        ctx.output = std::shared_ptr<AudioBuffer>(&remBuffer, [](AudioBuffer*){});
+        executor.execute(*this, ctx, {});
+
+        if (ctx.output.has_value() && ctx.output.type() == typeid(std::shared_ptr<AudioBuffer>)) {
+            auto bufPtr = std::any_cast<std::shared_ptr<AudioBuffer>>(ctx.output);
+            if (bufPtr.get() != &remBuffer) {
+                remBuffer = std::move(*bufPtr);
+            }
+        }
+
+        float* dest = fullBuffer.data() + numBlocks * blockSize * m_spec.numChannels;
+        const float* src = remBuffer.data();
+        std::copy_n(src, remainder * m_spec.numChannels, dest);
+    }
+
+    // Сохраняем результат
+    auto asset = std::make_shared<AudioAsset>(std::make_unique<AudioBuffer>(std::move(fullBuffer)));
+    asset->saveToFile(path);
+}
+
+} // namespace arxglue::sound
+
+===
+.\src\sound\ga_spatial.cpp
+===
+#include "ga_spatial.hpp"
+#include <cmath>
+#include <algorithm>
+
+namespace arxglue::sound {
+
+GASpatializer::GASpatializer() {
+    // Инициализация моторами по умолчанию
+    m_listenerMotor[0] = 1.0f;
+    m_sourceMotor[0] = 1.0f;
+    updateDerivedData();
+}
+
+void GASpatializer::setListenerPose(const Motor& motor) {
+    m_listenerMotor = motor;
+    m_listenerPos = ga::PGA3D_impl::apply_motor_to_point(motor, {0, 0, 0});
+    updateDerivedData();
+}
+
+void GASpatializer::setListenerPosition(const Point& pos) {
+    m_listenerPos = pos;
+    Motor translation = ga::PGA3D_impl::motor_from_axis_angle({1,0,0}, 0, pos);
+    m_listenerMotor = translation;
+    updateDerivedData();
+}
+
+void GASpatializer::setListenerOrientation(const Point& forward, const Point& up) {
+    // Нормализуем forward и up
+    auto normalize = [](Point& p) {
+        float len = std::sqrt(p[0]*p[0] + p[1]*p[1] + p[2]*p[2]);
+        if (len > 1e-6f) {
+            p[0] /= len; p[1] /= len; p[2] /= len;
+        }
+    };
+    Point f = forward, u = up;
+    normalize(f); normalize(u);
+    // Вычисляем right = cross(f, u) и перестраиваем up для ортогональности
+    Point r = {
+        f[1]*u[2] - f[2]*u[1],
+        f[2]*u[0] - f[0]*u[2],
+        f[0]*u[1] - f[1]*u[0]
+    };
+    normalize(r);
+    Point newUp = {
+        r[1]*f[2] - r[2]*f[1],
+        r[2]*f[0] - r[0]*f[2],
+        r[0]*f[1] - r[1]*f[0]
+    };
+    m_listenerForward = f;
+    m_listenerUp = newUp;
+    m_listenerRight = r;
+
+    // Строим мотор из матрицы поворота
+    std::array<float, 16> mat = {
+        r[0], newUp[0], -f[0], 0,
+        r[1], newUp[1], -f[1], 0,
+        r[2], newUp[2], -f[2], 0,
+        0, 0, 0, 1
+    };
+    Motor rotMotor = ga::PGA3D_impl::motor_from_matrix(mat);
+    Motor transMotor = ga::PGA3D_impl::motor_from_axis_angle({1,0,0}, 0, m_listenerPos);
+    m_listenerMotor = transMotor * rotMotor;
+    updateDerivedData();
+}
+
+void GASpatializer::setSourcePose(const Motor& motor) {
+    m_sourceMotor = motor;
+    m_sourcePos = ga::PGA3D_impl::apply_motor_to_point(motor, {0, 0, 0});
+}
+
+void GASpatializer::setSourcePosition(const Point& pos) {
+    m_sourcePos = pos;
+    Motor translation = ga::PGA3D_impl::motor_from_axis_angle({1,0,0}, 0, pos);
+    m_sourceMotor = translation;
+}
+
+void GASpatializer::updateDerivedData() {
+    // Извлекаем ориентацию слушателя из мотора
+    Point origin = {0,0,0};
+    Point forwardPt = {0,0,-1};
+    Point upPt = {0,1,0};
+    m_listenerForward = ga::PGA3D_impl::apply_motor_to_point(m_listenerMotor, forwardPt);
+    m_listenerForward[0] -= m_listenerPos[0];
+    m_listenerForward[1] -= m_listenerPos[1];
+    m_listenerForward[2] -= m_listenerPos[2];
+    float len = std::sqrt(m_listenerForward[0]*m_listenerForward[0] +
+                          m_listenerForward[1]*m_listenerForward[1] +
+                          m_listenerForward[2]*m_listenerForward[2]);
+    if (len > 1e-6f) {
+        m_listenerForward[0] /= len;
+        m_listenerForward[1] /= len;
+        m_listenerForward[2] /= len;
+    }
+
+    Point upWorld = ga::PGA3D_impl::apply_motor_to_point(m_listenerMotor, upPt);
+    upWorld[0] -= m_listenerPos[0];
+    upWorld[1] -= m_listenerPos[1];
+    upWorld[2] -= m_listenerPos[2];
+    len = std::sqrt(upWorld[0]*upWorld[0] + upWorld[1]*upWorld[1] + upWorld[2]*upWorld[2]);
+    if (len > 1e-6f) {
+        upWorld[0] /= len;
+        upWorld[1] /= len;
+        upWorld[2] /= len;
+    }
+    m_listenerUp = upWorld;
+
+    // right = cross(forward, up)
+    m_listenerRight = {
+        m_listenerForward[1]*m_listenerUp[2] - m_listenerForward[2]*m_listenerUp[1],
+        m_listenerForward[2]*m_listenerUp[0] - m_listenerForward[0]*m_listenerUp[2],
+        m_listenerForward[0]*m_listenerUp[1] - m_listenerForward[1]*m_listenerUp[0]
+    };
+}
+
+GASpatializer::Point GASpatializer::getRelativeSourcePosition() const {
+    Point rel = {
+        m_sourcePos[0] - m_listenerPos[0],
+        m_sourcePos[1] - m_listenerPos[1],
+        m_sourcePos[2] - m_listenerPos[2]
+    };
+    return rel;
+}
+
+void GASpatializer::computeGains(float& leftGain, float& rightGain, float& distanceAttenuation) const {
+    Point rel = getRelativeSourcePosition();
+    float dist = std::sqrt(rel[0]*rel[0] + rel[1]*rel[1] + rel[2]*rel[2]);
+    if (dist < 0.1f) dist = 0.1f; // избегаем бесконечного усиления
+
+    // Затухание по расстоянию (обратный квадрат)
+    distanceAttenuation = 1.0f / (1.0f + dist * 0.5f);
+
+    // Нормализуем вектор направления
+    Point dir = {rel[0]/dist, rel[1]/dist, rel[2]/dist};
+
+    // Проекция на right и forward слушателя (для панорамирования и фронтального ослабления)
+    float dotRight = dir[0]*m_listenerRight[0] + dir[1]*m_listenerRight[1] + dir[2]*m_listenerRight[2];
+    float dotForward = dir[0]*m_listenerForward[0] + dir[1]*m_listenerForward[1] + dir[2]*m_listenerForward[2];
+
+    // Панорамирование: -1 (лево) .. 1 (право)
+    float pan = std::clamp(dotRight, -1.0f, 1.0f);
+    // Ослабление сзади (если источник позади)
+    float backAtten = (dotForward < 0) ? 0.7f : 1.0f;
+
+    // Constant power pan
+    float panAngle = pan * 0.785398f; // 45 градусов максимум
+    leftGain = std::cos(panAngle) * backAtten;
+    rightGain = std::sin(panAngle) * backAtten;
+}
+
+void GASpatializer::processMonoToStereo(const AudioBuffer& input,
+                                        AudioBuffer& outputLeft,
+                                        AudioBuffer& outputRight) {
+    size_t numFrames = input.getNumFrames();
+    if (numFrames == 0) return;
+
+    const float* inData = input.getChannelData(0);
+    float* outLeft = outputLeft.getChannelData(0);
+    float* outRight = outputRight.getChannelData(0);
+
+    float leftGain, rightGain, distAtt;
+    computeGains(leftGain, rightGain, distAtt);
+
+    float totalLeft = leftGain * distAtt;
+    float totalRight = rightGain * distAtt;
+
+    for (size_t i = 0; i < numFrames; ++i) {
+        float sample = inData[i * input.getSpec().numChannels];
+        outLeft[i] = sample * totalLeft;
+        outRight[i] = sample * totalRight;
+    }
+}
+
+} // namespace arxglue::sound
+
+===
+.\src\sound\miniaudio_backend.cpp
+===
+// src/sound/miniaudio_backend.cpp
+#include "miniaudio_backend.hpp"
+#include "audio_device.hpp"
+#include <stdexcept>
+#include <cstring>
+#include <vector>
+
+namespace arxglue::sound {
+
+class MiniAudioDevice : public AudioDevice {
+public:
+    MiniAudioDevice(ma_context* context,
+                    const ma_device_config& config,
+                    AudioCallback callback,
+                    void* userData)
+        : m_callback(std::move(callback)), m_userData(userData)
+    {
+        ma_result result = ma_device_init(context, &config, &m_device);
+        if (result != MA_SUCCESS) {
+            char errorMsg[256];
+            snprintf(errorMsg, sizeof(errorMsg), "Failed to initialize miniaudio device. Error code: %d", result);
+            throw std::runtime_error(errorMsg);
+        }
+        m_device.pUserData = this;
+        
+        m_numChannels = m_device.playback.channels;
+        if (m_numChannels == 0) m_numChannels = m_device.capture.channels;
+        if (m_numChannels == 0) m_numChannels = 2;
+    }
+
+    ~MiniAudioDevice() override {
+        ma_device_uninit(&m_device);
+    }
+
+    void start() override {
+        if (ma_device_start(&m_device) != MA_SUCCESS) {
+            throw std::runtime_error("Failed to start miniaudio device");
+        }
+        m_running = true;
+    }
+
+    void stop() override {
+        if (ma_device_stop(&m_device) != MA_SUCCESS) {
+            throw std::runtime_error("Failed to stop miniaudio device");
+        }
+        m_running = false;
+    }
+
+    bool isRunning() const override { return m_running; }
+    double getSampleRate() const override { return m_device.sampleRate; }
+    int getBufferSize() const override {
+        return static_cast<int>(m_device.playback.internalPeriodSizeInFrames);
+    }
+    int getNumOutputChannels() const override { return static_cast<int>(m_numChannels); }
+
+    static void dataCallback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
+        auto* self = static_cast<MiniAudioDevice*>(pDevice->pUserData);
+        if (!self->m_callback) return;
+
+        ma_uint32 channels = self->m_numChannels;
+        if (channels == 0) return;
+
+        std::vector<float*> outPtrs(channels, nullptr);
+        std::vector<float*> inPtrs(channels, nullptr);
+        std::vector<std::vector<float>> outBuffers;
+        std::vector<std::vector<float>> inBuffers;
+
+        if (pOutput) {
+            outBuffers.resize(channels);
+            for (ma_uint32 ch = 0; ch < channels; ++ch) {
+                outBuffers[ch].assign(frameCount, 0.0f);
+                outPtrs[ch] = outBuffers[ch].data();
+            }
+        }
+
+        if (pInput) {
+            inBuffers.resize(channels);
+            for (ma_uint32 ch = 0; ch < channels; ++ch) {
+                inBuffers[ch].assign(frameCount, 0.0f);
+                inPtrs[ch] = inBuffers[ch].data();
+            }
+        }
+
+        self->m_callback(outPtrs.data(), inPtrs.data(), static_cast<int>(frameCount), static_cast<int>(channels));
+
+        if (pOutput) {
+            float* interleavedOut = static_cast<float*>(pOutput);
+            for (ma_uint32 frame = 0; frame < frameCount; ++frame) {
+                for (ma_uint32 ch = 0; ch < channels; ++ch) {
+                    interleavedOut[frame * channels + ch] = outBuffers[ch][frame];
+                }
+            }
+        }
+        (void)pInput;
+    }
+
+private:
+    ma_device m_device;
+    AudioCallback m_callback;
+    void* m_userData = nullptr;
+    bool m_running = false;
+    ma_uint32 m_numChannels = 0;
+};
+
+// MiniAudioBackend
+MiniAudioBackend::MiniAudioBackend() {
+    if (ma_context_init(nullptr, 0, nullptr, &m_context) != MA_SUCCESS) {
+        throw std::runtime_error("Failed to initialize miniaudio context");
+    }
+    m_initialized = true;
+}
+
+MiniAudioBackend::~MiniAudioBackend() {
+    shutdown();
+}
+
+std::vector<AudioDeviceInfo> MiniAudioBackend::enumerateDevices() {
+    std::vector<AudioDeviceInfo> devices;
+    ma_device_info* pPlaybackInfos;
+    ma_uint32 playbackCount;
+    ma_device_info* pCaptureInfos;
+    ma_uint32 captureCount;
+
+    if (ma_context_get_devices(&m_context, &pPlaybackInfos, &playbackCount, &pCaptureInfos, &captureCount) != MA_SUCCESS) {
+        return devices;
+    }
+
+    for (ma_uint32 i = 0; i < playbackCount; ++i) {
+        AudioDeviceInfo info;
+        info.name = pPlaybackInfos[i].name;
+        info.maxOutputChannels = (pPlaybackInfos[i].nativeDataFormatCount > 0)
+                                 ? static_cast<int>(pPlaybackInfos[i].nativeDataFormats[0].channels)
+                                 : 2;
+        info.maxInputChannels = 0;
+        info.isDefaultOutput = (pPlaybackInfos[i].isDefault != MA_FALSE);
+        info.isDefaultInput = false;
+        info.id = i;
+        devices.push_back(info);
+    }
+
+    for (ma_uint32 i = 0; i < captureCount; ++i) {
+        AudioDeviceInfo info;
+        info.name = pCaptureInfos[i].name;
+        info.maxInputChannels = (pCaptureInfos[i].nativeDataFormatCount > 0)
+                                ? static_cast<int>(pCaptureInfos[i].nativeDataFormats[0].channels)
+                                : 2;
+        info.maxOutputChannels = 0;
+        info.isDefaultInput = (pCaptureInfos[i].isDefault != MA_FALSE);
+        info.isDefaultOutput = false;
+        info.id = playbackCount + i;
+        devices.push_back(info);
+    }
+
+    return devices;
+}
+
+std::unique_ptr<AudioDevice> MiniAudioBackend::openDevice(
+    const AudioDeviceInfo* inputDevice,
+    const AudioDeviceInfo* outputDevice,
+    unsigned int sampleRate,
+    unsigned int bufferSize,
+    AudioCallback callback,
+    void* userData)
+{
+    (void)inputDevice;   // пока не используется
+    (void)outputDevice;  // всегда используем устройство по умолчанию
+
+    ma_device_config config = ma_device_config_init(ma_device_type_playback);
+
+    unsigned int rate = (sampleRate > 0) ? sampleRate : 44100;
+    config.sampleRate = rate;
+    config.periodSizeInFrames = (bufferSize > 0) ? bufferSize : 512;
+    config.dataCallback = MiniAudioDevice::dataCallback;
+    config.pUserData = this;
+
+    // Playback: устройство по умолчанию
+    config.playback.pDeviceID = nullptr;
+    config.playback.format = ma_format_f32;
+    config.playback.channels = (outputDevice && outputDevice->maxOutputChannels > 0)
+                               ? static_cast<ma_uint32>(outputDevice->maxOutputChannels)
+                               : 2;
+
+    // Capture: не используется
+    config.capture.pDeviceID = nullptr;
+    config.capture.format = ma_format_f32;
+    config.capture.channels = 0;
+
+    return std::make_unique<MiniAudioDevice>(&m_context, config, std::move(callback), userData);
+}
+
+void MiniAudioBackend::shutdown() {
+    if (m_initialized) {
+        ma_context_uninit(&m_context);
+        m_initialized = false;
+    }
+}
+
+} // namespace arxglue::sound
+
+===
+.\src\sound\miniaudio_impl.cpp
+===
+// src/sound/miniaudio_impl.cpp
+#define MINIAUDIO_IMPLEMENTATION
+#include "miniaudio.h"
+
+===
+.\src\sound\sound_module.cpp
+===
+#include "sound_module.hpp"
+#include "audio_buffer.hpp"
+#include "audio_asset.hpp"
+#include "audio_device.hpp"
+#include "audio_graph.hpp"
+#include "miniaudio_backend.hpp"
+#include "../core/type_system.hpp"
+#include "../nodes/node_factory.hpp"
+#include "../nodes/soundn/generator_nodes.hpp"
+#include "../nodes/soundn/filter_nodes.hpp"
+#include "../nodes/soundn/mixer_nodes.hpp"
+#include "../nodes/soundn/io_nodes.hpp"
+#include "../nodes/soundn/spatial_nodes.hpp"
+#include <algorithm>
+
+namespace arxglue::sound {
+
+void initializeModule() {
+    auto& ts = TypeSystem::instance();
+    auto& factory = NodeFactory::instance();
+
+    ts.registerType(TypeId::AudioBuffer, typeid(std::shared_ptr<AudioBuffer>));
+    ts.registerType(TypeId::AudioAsset,  typeid(std::shared_ptr<AudioAsset>));
+    ts.registerType(TypeId::AudioSpec,   typeid(AudioSpec));
+    ts.registerType(TypeId::AudioDevice, typeid(std::shared_ptr<AudioDevice>));
+    ts.registerType(TypeId::AudioGraph,  typeid(std::shared_ptr<AudioGraph>));
+
+    // Конвертер AudioAsset -> AudioBuffer
+    ts.registerConverter(TypeId::AudioAsset, TypeId::AudioBuffer,
+        [](const std::any& v) -> std::any {
+            auto asset = std::any_cast<std::shared_ptr<AudioAsset>>(v);
+            if (asset && asset->getBuffer()) {
+                auto buf = asset->getBuffer();
+                auto copy = std::make_shared<AudioBuffer>(buf->getSpec(), buf->getNumFrames());
+                std::copy_n(buf->data(), buf->getNumSamples(), copy->data());
+                return copy;
+            }
+            return std::shared_ptr<AudioBuffer>();
+        });
+
+    // Конвертер AudioBuffer -> AudioAsset
+    ts.registerConverter(TypeId::AudioBuffer, TypeId::AudioAsset,
+        [](const std::any& v) -> std::any {
+            auto buf = std::any_cast<std::shared_ptr<AudioBuffer>>(v);
+            auto asset = std::make_shared<AudioAsset>();
+            if (buf) {
+                auto newBuf = std::make_unique<AudioBuffer>(buf->getSpec(), buf->getNumFrames());
+                std::copy_n(buf->data(), buf->getNumSamples(), newBuf->data());
+                asset->setBuffer(std::move(newBuf));
+            }
+            return asset;
+        });
+
+    // Регистрация узлов
+    factory.registerNode("SineOscillator",   [](){ return std::make_unique<nodes::SineOscillatorNode>(); });
+    factory.registerNode("WhiteNoise",       [](){ return std::make_unique<nodes::WhiteNoiseNode>(); });
+    factory.registerNode("BiquadFilter",     [](){ return std::make_unique<nodes::BiquadFilterNode>(); });
+    factory.registerNode("Gain",             [](){ return std::make_unique<nodes::GainNode>(); });
+    factory.registerNode("Mixer",            [](){ return std::make_unique<nodes::MixerNode>(); });
+    factory.registerNode("Panner",           [](){ return std::make_unique<nodes::PannerNode>(); });
+    factory.registerNode("AudioOutput",      [](){ return std::make_unique<nodes::AudioOutputNode>(); });
+    factory.registerNode("AudioFileWriter",  [](){ return std::make_unique<nodes::AudioFileWriterNode>(); });
+    factory.registerNode("AudioFileReader",  [](){ return std::make_unique<nodes::AudioFileReaderNode>(); });
+    factory.registerNode("GASpatializer",    [](){ return std::make_unique<nodes::GASpatializerNode>(); });
+}
+
+} // namespace arxglue::sound
+
+===
+.\src\ui\input_manager.cpp
+===
+#include "input_manager.hpp"
+#include "../core/context.hpp"
+#include <iostream>
+
+namespace arxglue::ui {
+
+InputManager& InputManager::instance() {
+    static InputManager instance;
+    return instance;
+}
+
+void InputManager::update(GLFWwindow* window) {
+    static const int monitoredKeys[] = {
+        GLFW_KEY_W, GLFW_KEY_A, GLFW_KEY_S, GLFW_KEY_D,
+        GLFW_KEY_UP, GLFW_KEY_DOWN, GLFW_KEY_LEFT, GLFW_KEY_RIGHT,
+        GLFW_KEY_SPACE, GLFW_KEY_ENTER, GLFW_KEY_ESCAPE
+    };
+    for (int key : monitoredKeys) {
+        m_keys[key] = (glfwGetKey(window, key) == GLFW_PRESS);
+    }
+
+    m_mouseButtons[GLFW_MOUSE_BUTTON_LEFT]  = (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
+    m_mouseButtons[GLFW_MOUSE_BUTTON_RIGHT] = (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
+
+    glfwGetCursorPos(window, &m_mouseX, &m_mouseY);
+
+    static int frameCounter = 0;
+    if (frameCounter++ % 60 == 0) {
+        std::cout << "[InputManager] Mouse: (" << m_mouseX << ", " << m_mouseY << ") Left: " 
+                  << (m_mouseButtons[GLFW_MOUSE_BUTTON_LEFT] ? "down" : "up") << std::endl;
+    }
+}
+
+void InputManager::writeToContext(arxglue::Context& ctx) const {
+    ctx.setState("input.mouseX", static_cast<float>(m_mouseX));
+    ctx.setState("input.mouseY", static_cast<float>(m_mouseY));
+    ctx.setState("input.mouseLeft", m_mouseButtons.count(GLFW_MOUSE_BUTTON_LEFT) ? m_mouseButtons.at(GLFW_MOUSE_BUTTON_LEFT) : false);
+    ctx.setState("input.mouseRight", m_mouseButtons.count(GLFW_MOUSE_BUTTON_RIGHT) ? m_mouseButtons.at(GLFW_MOUSE_BUTTON_RIGHT) : false);
+
+    ctx.setState("input.keyW", m_keys.count(GLFW_KEY_W) ? m_keys.at(GLFW_KEY_W) : false);
+    ctx.setState("input.keyA", m_keys.count(GLFW_KEY_A) ? m_keys.at(GLFW_KEY_A) : false);
+    ctx.setState("input.keyS", m_keys.count(GLFW_KEY_S) ? m_keys.at(GLFW_KEY_S) : false);
+    ctx.setState("input.keyD", m_keys.count(GLFW_KEY_D) ? m_keys.at(GLFW_KEY_D) : false);
+    ctx.setState("input.keyUp", m_keys.count(GLFW_KEY_UP) ? m_keys.at(GLFW_KEY_UP) : false);
+    ctx.setState("input.keyDown", m_keys.count(GLFW_KEY_DOWN) ? m_keys.at(GLFW_KEY_DOWN) : false);
+    ctx.setState("input.keyLeft", m_keys.count(GLFW_KEY_LEFT) ? m_keys.at(GLFW_KEY_LEFT) : false);
+    ctx.setState("input.keyRight", m_keys.count(GLFW_KEY_RIGHT) ? m_keys.at(GLFW_KEY_RIGHT) : false);
+    ctx.setState("input.keySpace", m_keys.count(GLFW_KEY_SPACE) ? m_keys.at(GLFW_KEY_SPACE) : false);
+    ctx.setState("input.keyEnter", m_keys.count(GLFW_KEY_ENTER) ? m_keys.at(GLFW_KEY_ENTER) : false);
+    ctx.setState("input.keyEscape", m_keys.count(GLFW_KEY_ESCAPE) ? m_keys.at(GLFW_KEY_ESCAPE) : false);
+}
+
+bool InputManager::isKeyPressed(int key) const {
+    auto it = m_keys.find(key);
+    return it != m_keys.end() && it->second;
+}
+
+bool InputManager::isMouseButtonPressed(int button) const {
+    auto it = m_mouseButtons.find(button);
+    return it != m_mouseButtons.end() && it->second;
+}
+
+std::array<float, 2> InputManager::getMousePosition() const {
+    return { static_cast<float>(m_mouseX), static_cast<float>(m_mouseY) };
+}
+
+} // namespace arxglue::ui
+
+===
+.\src\ui\ui_module.cpp
+===
+#define GLFW_INCLUDE_NONE
+#include <GLFW/glfw3.h>
+#include "ui_module.hpp"
+#include "input_manager.hpp"
+#include "../nodes/uin/ui_nodes.hpp"
+#include "../nodes/uin/ui_render_node.hpp"
+#include "../nodes/node_factory.hpp"
+
+namespace arxglue::ui {
+
+void initializeModule() {
+    // Регистрация UI узлов
+    registerUINodes();
+
+    auto& factory = NodeFactory::instance();
+    factory.registerNode("UIRenderNode", []() {
+        return std::make_unique<UIRenderNode>();
+    });
+}
+
+} // namespace arxglue::ui
+
 < | end of code | >
-2/4
-Ответь одним словом: принял

@@ -3,7 +3,8 @@
 #include "sound/sound_module.hpp"
 #include "game/game_module.hpp"
 #include "ui/ui_module.hpp"
-#include "game/DoodleJumpGame.hpp"
+#define GLFW_INCLUDE_NONE
+#include "examples/doodlejump/DoodleJumpGame.hpp"
 #include <iostream>
 
 int main() {

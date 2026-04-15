@@ -1,14 +1,11 @@
+// src/render/command_buffer.cpp
 #include "command_buffer.hpp"
 #include "graphics_device.hpp"
 #include <glad/glad.h>
 
 namespace arxglue::render {
 
-struct DrawData {
-    std::shared_ptr<Mesh> mesh;
-    std::shared_ptr<Material> material;
-    std::array<float, 16> transform;
-};
+// Удаляем определение DrawData – оно уже есть в command_buffer.hpp
 
 struct SceneData {
     const Scene* scene;
@@ -40,8 +37,9 @@ void CommandBuffer::setViewport(int x, int y, int width, int height) {
 
 void CommandBuffer::drawMesh(std::shared_ptr<Mesh> mesh,
                              std::shared_ptr<Material> material,
-                             const std::array<float, 16>& transform) {
-    DrawData data{mesh, material, transform};
+                             const std::array<float, 16>& transform,
+                             std::shared_ptr<Texture> texture) {
+    DrawData data{mesh, material, transform, texture};
     m_commands.push_back({Command::DrawMesh, data});
 }
 
@@ -80,6 +78,9 @@ void CommandBuffer::execute() {
         case Command::DrawMesh: {
             auto data = std::any_cast<DrawData>(cmd.data);
             if (data.mesh && data.material) {
+                if (data.texture) {
+                    data.material->setTexture("uTexture", data.texture);
+                }
                 data.material->apply();
                 data.material->getShader()->setUniformMat4("uModel", data.transform.data());
                 data.mesh->draw();
@@ -92,9 +93,10 @@ void CommandBuffer::execute() {
                 for (const auto& r : data.scene->getRenderables()) {
                     if (r.mesh && r.material) {
                         r.material->apply();
-                        r.material->getShader()->setUniformMat4("uView", data.camera->getViewMatrix());
-                        r.material->getShader()->setUniformMat4("uProjection", data.camera->getProjectionMatrix());
-                        r.material->getShader()->setUniformMat4("uModel", r.transform.data());
+                        auto shader = r.material->getShader();
+                        shader->setUniformMat4("uView", data.camera->getViewMatrix());
+                        shader->setUniformMat4("uProjection", data.camera->getProjectionMatrix());
+                        shader->setUniformMat4("uModel", r.transform.data());
                         r.mesh->draw();
                     }
                 }

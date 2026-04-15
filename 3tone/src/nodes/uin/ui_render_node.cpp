@@ -10,11 +10,13 @@ namespace arxglue::ui {
 UIRenderNode::UIRenderNode() = default;
 
 void UIRenderNode::execute(Context& ctx) {
+    std::cout << "[UIRenderNode] execute start" << std::endl;
     if (!ctx.hasState("ui.drawCommands")) {
         static int noCmdCount = 0;
         if (noCmdCount++ % 60 == 0) {
             std::cout << "[UIRenderNode] No draw commands in state" << std::endl;
         }
+        std::cout << "[UIRenderNode] execute end (no commands)" << std::endl;
         return;
     }
 
@@ -24,6 +26,7 @@ void UIRenderNode::execute(Context& ctx) {
         if (emptyCount++ % 60 == 0) {
             std::cout << "[UIRenderNode] Empty draw command list" << std::endl;
         }
+        std::cout << "[UIRenderNode] execute end (empty)" << std::endl;
         return;
     }
 
@@ -40,9 +43,7 @@ void UIRenderNode::execute(Context& ctx) {
     if (width == 0) width = 800;
     if (height == 0) height = 600;
 
-    auto& device = render::GraphicsDevice::instance();
-    device.makeCurrent();
-
+    std::cout << "[UIRenderNode] Setting viewport " << width << "x" << height << std::endl;
     glViewport(0, 0, width, height);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
@@ -64,6 +65,7 @@ void UIRenderNode::execute(Context& ctx) {
 
     for (const auto& c : commands) {
         if (c.mesh && c.material) {
+            std::cout << "[UIRenderNode] Drawing command with zOrder=" << c.zOrder << std::endl;
             c.material->apply();
             auto shader = c.material->getShader();
             shader->setUniformMat4("uModel", c.transform.data());
@@ -83,6 +85,7 @@ void UIRenderNode::execute(Context& ctx) {
     }
 
     ctx.setState("ui.drawCommands", std::vector<UIDrawCommand>{});
+    std::cout << "[UIRenderNode] execute end" << std::endl;
 }
 
 ComponentMetadata UIRenderNode::getMetadata() const {

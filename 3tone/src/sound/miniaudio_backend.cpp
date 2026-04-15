@@ -1,8 +1,9 @@
-#define MINIAUDIO_IMPLEMENTATION
+// src/sound/miniaudio_backend.cpp
 #include "miniaudio_backend.hpp"
 #include "audio_device.hpp"
 #include <stdexcept>
 #include <cstring>
+#include <vector>
 
 namespace arxglue::sound {
 
@@ -21,9 +22,13 @@ public:
             throw std::runtime_error(errorMsg);
         }
         m_device.pUserData = this;
+        
+        m_numChannels = m_device.playback.channels;
+        if (m_numChannels == 0) m_numChannels = m_device.capture.channels;
+        if (m_numChannels == 0) m_numChannels = 2;
     }
 
-    ~MiniAudioDevice() {
+    ~MiniAudioDevice() override {
         ma_device_uninit(&m_device);
     }
 
@@ -44,18 +49,49 @@ public:
     bool isRunning() const override { return m_running; }
     double getSampleRate() const override { return m_device.sampleRate; }
     int getBufferSize() const override {
-        return static_cast<int>(static_cast<ma_uint32>(m_device.playback.internalPeriodSizeInFrames));
+        return static_cast<int>(m_device.playback.internalPeriodSizeInFrames);
     }
-    int getNumOutputChannels() const override { return static_cast<int>(m_device.playback.channels); }
+    int getNumOutputChannels() const override { return static_cast<int>(m_numChannels); }
 
     static void dataCallback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
         auto* self = static_cast<MiniAudioDevice*>(pDevice->pUserData);
         if (!self->m_callback) return;
 
-        float** out = reinterpret_cast<float**>(&pOutput);
-        float** in  = const_cast<float**>(reinterpret_cast<const float**>(&pInput));
+        ma_uint32 channels = self->m_numChannels;
+        if (channels == 0) return;
 
-        self->m_callback(out, in, static_cast<int>(frameCount), static_cast<int>(pDevice->playback.channels));
+        std::vector<float*> outPtrs(channels, nullptr);
+        std::vector<float*> inPtrs(channels, nullptr);
+        std::vector<std::vector<float>> outBuffers;
+        std::vector<std::vector<float>> inBuffers;
+
+        if (pOutput) {
+            outBuffers.resize(channels);
+            for (ma_uint32 ch = 0; ch < channels; ++ch) {
+                outBuffers[ch].assign(frameCount, 0.0f);
+                outPtrs[ch] = outBuffers[ch].data();
+            }
+        }
+
+        if (pInput) {
+            inBuffers.resize(channels);
+            for (ma_uint32 ch = 0; ch < channels; ++ch) {
+                inBuffers[ch].assign(frameCount, 0.0f);
+                inPtrs[ch] = inBuffers[ch].data();
+            }
+        }
+
+        self->m_callback(outPtrs.data(), inPtrs.data(), static_cast<int>(frameCount), static_cast<int>(channels));
+
+        if (pOutput) {
+            float* interleavedOut = static_cast<float*>(pOutput);
+            for (ma_uint32 frame = 0; frame < frameCount; ++frame) {
+                for (ma_uint32 ch = 0; ch < channels; ++ch) {
+                    interleavedOut[frame * channels + ch] = outBuffers[ch][frame];
+                }
+            }
+        }
+        (void)pInput;
     }
 
 private:
@@ -63,6 +99,7 @@ private:
     AudioCallback m_callback;
     void* m_userData = nullptr;
     bool m_running = false;
+    ma_uint32 m_numChannels = 0;
 };
 
 // MiniAudioBackend
@@ -125,32 +162,28 @@ std::unique_ptr<AudioDevice> MiniAudioBackend::openDevice(
     AudioCallback callback,
     void* userData)
 {
+    (void)inputDevice;   // пока не используется
+    (void)outputDevice;  // всегда используем устройство по умолчанию
+
     ma_device_config config = ma_device_config_init(ma_device_type_playback);
 
-    if (outputDevice) {
-        config.playback.pDeviceID = reinterpret_cast<const ma_device_id*>(&outputDevice->id);
-        config.playback.format   = ma_format_f32;
-        config.playback.channels = (outputDevice->maxOutputChannels > 0)
-                                   ? static_cast<ma_uint32>(outputDevice->maxOutputChannels)
-                                   : 0;
-    } else {
-        config.playback.pDeviceID = nullptr;
-        config.playback.format    = ma_format_f32;
-        config.playback.channels  = 0;
-    }
+    unsigned int rate = (sampleRate > 0) ? sampleRate : 44100;
+    config.sampleRate = rate;
+    config.periodSizeInFrames = (bufferSize > 0) ? bufferSize : 512;
+    config.dataCallback = MiniAudioDevice::dataCallback;
+    config.pUserData = this;
 
-    if (inputDevice) {
-        config.capture.pDeviceID = reinterpret_cast<const ma_device_id*>(&inputDevice->id);
-        config.capture.format    = ma_format_f32;
-        config.capture.channels  = (inputDevice->maxInputChannels > 0)
-                                   ? static_cast<ma_uint32>(inputDevice->maxInputChannels)
-                                   : 0;
-    }
+    // Playback: устройство по умолчанию
+    config.playback.pDeviceID = nullptr;
+    config.playback.format = ma_format_f32;
+    config.playback.channels = (outputDevice && outputDevice->maxOutputChannels > 0)
+                               ? static_cast<ma_uint32>(outputDevice->maxOutputChannels)
+                               : 2;
 
-    config.sampleRate      = (sampleRate > 0) ? sampleRate : 0;
-    config.periodSizeInFrames = bufferSize;
-    config.dataCallback    = MiniAudioDevice::dataCallback;
-    config.pUserData       = this;
+    // Capture: не используется
+    config.capture.pDeviceID = nullptr;
+    config.capture.format = ma_format_f32;
+    config.capture.channels = 0;
 
     return std::make_unique<MiniAudioDevice>(&m_context, config, std::move(callback), userData);
 }

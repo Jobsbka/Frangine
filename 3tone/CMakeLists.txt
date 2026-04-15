@@ -5,30 +5,26 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Загрузка GLFW через FetchContent (требуется для рендера)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+
 include(FetchContent)
-FetchContent_Declare(
-    glfw
-    GIT_REPOSITORY https://github.com/glfw/glfw.git
-    GIT_TAG 3.3.8
-)
+FetchContent_Declare(glfw GIT_REPOSITORY https://github.com/glfw/glfw.git GIT_TAG 3.3.8)
 FetchContent_MakeAvailable(glfw)
 
-# Исполняемый файл со всеми исходниками
+FetchContent_Declare(json GIT_REPOSITORY https://github.com/nlohmann/json.git GIT_TAG v3.11.3)
+FetchContent_MakeAvailable(json)
+
+find_package(Threads REQUIRED)
+
 add_executable(3tone
-    src/main.cpp
     src/glad.c
+    src/main.cpp
+    # core
     src/core/graph.cpp
-    src/nodes/text_texture_node.cpp
     src/core/executor.cpp
     src/core/baking.cpp
-    src/assets/asset_manager.cpp
-    src/assets/stb_impl.cpp
-    src/nodes/basic_nodes.cpp
-    src/nodes/asset_node.cpp
-    src/nodes/checker_texture.cpp
-    src/nodes/convert_node.cpp
-    src/nodes/render_nodes.cpp
+    src/core/core_module.cpp
+    # render
     src/render/graphics_device.cpp
     src/render/texture.cpp
     src/render/mesh.cpp
@@ -38,33 +34,54 @@ add_executable(3tone
     src/render/scene.cpp
     src/render/command_buffer.cpp
     src/render/render_target.cpp
+    src/render/render_module.cpp
+    src/render/font.cpp
+    # sound
+    src/sound/miniaudio_backend.cpp
+    src/sound/audio_graph.cpp
+    src/sound/ga_spatial.cpp
+    src/sound/dsp/biquad.cpp
+    src/sound/sound_module.cpp
+    src/sound/audio_asset.cpp
+    src/sound/miniaudio_impl.cpp
+    # game
     src/game/Game.cpp
+    src/game/scene.cpp
+    src/game/game_object.cpp
+    src/game/game_module.cpp
+    # examples/doodlejump
+    src/examples/doodlejump/DoodleJumpGame.cpp
+    # ui
     src/ui/input_manager.cpp
-    src/ui/ui_nodes.cpp
-    src/ui/ui_render_node.cpp
+    src/ui/ui_module.cpp
+    # assets
+    src/assets/asset_manager.cpp
+    src/assets/stb_impl.cpp
+    # nodes / coren
+    src/nodes/coren/basic_nodes.cpp
+    src/nodes/coren/convert_node.cpp
+    src/nodes/coren/asset_node.cpp
+    src/nodes/coren/checker_texture.cpp
+    src/nodes/coren/text_texture_node.cpp
+    # nodes / rendern
+    src/nodes/rendern/render_nodes.cpp
+    # nodes / soundn
+    src/nodes/soundn/generator_nodes.cpp
+    src/nodes/soundn/filter_nodes.cpp
+    src/nodes/soundn/mixer_nodes.cpp
+    src/nodes/soundn/io_nodes.cpp
+    src/nodes/soundn/spatial_nodes.cpp
+    # nodes / uin
+    src/nodes/uin/ui_nodes.cpp
+    src/nodes/uin/ui_render_node.cpp
 )
 
-# Директории с заголовочными файлами
-target_include_directories(3tone PRIVATE src)
-target_include_directories(3tone PRIVATE include)   # nlohmann/json, glad, KHR
+target_include_directories(3tone PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(3tone PRIVATE Threads::Threads glfw nlohmann_json::nlohmann_json)
 
-# Опции компиляции
 if(MSVC)
     target_compile_options(3tone PRIVATE /W4 /EHsc)
     target_compile_definitions(3tone PRIVATE _CRT_SECURE_NO_WARNINGS)
 else()
     target_compile_options(3tone PRIVATE -Wall -Wextra -Wpedantic)
-endif()
-
-# Линковка с потоками и GLFW (OpenGL подтягивается через GLFW)
-find_package(Threads REQUIRED)
-target_link_libraries(3tone Threads::Threads glfw)
-
-# Для Windows: автоматическое копирование DLL GLFW (если используется динамическая сборка)
-if(WIN32 AND BUILD_SHARED_LIBS)
-    add_custom_command(TARGET 3tone POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        $<TARGET_FILE:glfw>
-        $<TARGET_FILE_DIR:3tone>
-    )
 endif()

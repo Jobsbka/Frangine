@@ -1,3 +1,4 @@
+// src/nodes/uin/ui_nodes.hpp
 #pragma once
 #include "../../core/node.hpp"
 #include "../../render/mesh.hpp"
@@ -10,22 +11,19 @@
 
 namespace arxglue::ui {
 
-// Структура команды рендеринга UI (используется в state)
 struct UIDrawCommand {
     enum class Type { Rect, Text, Image } type;
     std::shared_ptr<render::Mesh> mesh;
     std::shared_ptr<render::Material> material;
-    std::array<float, 16> transform; // model matrix
-    int zOrder = 0; // для сортировки
+    std::array<float, 16> transform;
+    int zOrder = 0;
 };
 
-// Вспомогательная функция для создания матрицы трансформации из позиции и размера
 std::array<float, 16> makeTransform2D(const std::array<float, 2>& position,
                                       const std::array<float, 2>& size,
                                       float rotation = 0.0f);
 
-// ========== Базовые UI-узлы ==========
-
+// ========== RectNode ==========
 class RectNode : public INode {
 public:
     RectNode();
@@ -42,8 +40,10 @@ private:
     std::shared_ptr<render::Texture> m_texture;
     std::string m_texturePath;
     int m_zOrder = 0;
+    int m_visibleMode = -1;
 };
 
+// ========== TextNode ==========
 class TextNode : public INode {
 public:
     TextNode();
@@ -56,12 +56,15 @@ public:
 private:
     std::array<float, 2> m_position = {0.0f, 0.0f};
     std::string m_text;
+    std::string m_textId;                         // строковый ID (например, "scoreLabel")
     std::array<float, 3> m_color = {1.0f, 1.0f, 1.0f};
     float m_fontSize = 24.0f;
     int m_zOrder = 0;
+    int m_visibleMode = -1;
     std::shared_ptr<render::Texture> m_cachedTexture;
 };
 
+// ========== ImageNode ==========
 class ImageNode : public INode {
 public:
     ImageNode();
@@ -77,8 +80,10 @@ private:
     std::shared_ptr<render::Texture> m_texture;
     std::string m_texturePath;
     int m_zOrder = 0;
+    int m_visibleMode = -1;
 };
 
+// ========== ButtonNode ==========
 class ButtonNode : public INode {
 public:
     ButtonNode();
@@ -92,13 +97,16 @@ private:
     std::array<float, 2> m_position = {0.0f, 0.0f};
     std::array<float, 2> m_size = {120.0f, 40.0f};
     std::string m_text;
+    std::string m_buttonId;                       // строковый ID (например, "play")
     std::array<float, 4> m_normalColor = {0.7f, 0.7f, 0.7f, 1.0f};
     std::array<float, 4> m_hoverColor = {0.9f, 0.9f, 0.9f, 1.0f};
     std::array<float, 4> m_pressedColor = {0.5f, 0.5f, 0.5f, 1.0f};
     int m_zOrder = 0;
+    int m_visibleMode = -1;
     bool m_wasPressed = false;
 };
 
+// ========== SliderNode ==========
 class SliderNode : public INode {
 public:
     SliderNode();
@@ -118,11 +126,11 @@ private:
     std::array<float, 4> m_fillColor = {0.2f, 0.6f, 1.0f, 1.0f};
     std::array<float, 4> m_handleColor = {1.0f, 1.0f, 1.0f, 1.0f};
     int m_zOrder = 0;
+    int m_visibleMode = -1;
     bool m_dragging = false;
 };
 
-// ========== Layout-узлы ==========
-
+// ========== HorizontalLayoutNode ==========
 class HorizontalLayoutNode : public INode {
 public:
     HorizontalLayoutNode();
@@ -135,9 +143,11 @@ public:
 private:
     std::array<float, 2> m_position = {0.0f, 0.0f};
     float m_spacing = 10.0f;
+    int m_visibleMode = -1;
     std::vector<std::unique_ptr<INode>> m_children;
 };
 
+// ========== VerticalLayoutNode ==========
 class VerticalLayoutNode : public INode {
 public:
     VerticalLayoutNode();
@@ -150,9 +160,11 @@ public:
 private:
     std::array<float, 2> m_position = {0.0f, 0.0f};
     float m_spacing = 10.0f;
+    int m_visibleMode = -1;
     std::vector<std::unique_ptr<INode>> m_children;
 };
 
+// ========== CanvasNode ==========
 class CanvasNode : public INode {
 public:
     CanvasNode();
@@ -165,10 +177,10 @@ public:
 private:
     int m_width = 800;
     int m_height = 600;
+    int m_visibleMode = -1;
     std::vector<std::unique_ptr<INode>> m_children;
 };
 
-// Регистрация всех UI-узлов в фабрике
 void registerUINodes();
 
 } // namespace arxglue::ui

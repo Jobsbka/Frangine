@@ -23,13 +23,13 @@ protected:
 
     // Виртуальные методы для переопределения
     virtual void onInit() {}
-    virtual void onUpdate(float deltaTime) {}
+    virtual void onUpdate(float deltaTime) { (void)deltaTime; }
     virtual void onRender() {}
     virtual void onShutdown() {}
-    virtual void onKey(int key, int scancode, int action, int mods) {}
-    virtual void onMouseButton(int button, int action, int mods) {}
-    virtual void onMouseMove(double xpos, double ypos) {}
-    virtual void onResize(int width, int height) {}
+    virtual void onKey(int key, int scancode, int action, int mods) { (void)key; (void)scancode; (void)action; (void)mods; }
+    virtual void onMouseButton(int button, int action, int mods) { (void)button; (void)action; (void)mods; }
+    virtual void onMouseMove(double xpos, double ypos) { (void)xpos; (void)ypos; }
+    virtual void onResize(int width, int height) { (void)width; (void)height; }
 
 private:
     static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);

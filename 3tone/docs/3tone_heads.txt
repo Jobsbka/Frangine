@@ -45,6 +45,7 @@ add_executable(3tone
     src/render/command_buffer.cpp
     src/render/render_target.cpp
     src/render/render_module.cpp
+    src/render/font.cpp
     # sound
     src/sound/miniaudio_backend.cpp
     src/sound/audio_graph.cpp
@@ -52,12 +53,14 @@ add_executable(3tone
     src/sound/dsp/biquad.cpp
     src/sound/sound_module.cpp
     src/sound/audio_asset.cpp
+    src/sound/miniaudio_impl.cpp
     # game
     src/game/Game.cpp
-    src/game/DoodleJumpGame.cpp
     src/game/scene.cpp
     src/game/game_object.cpp
     src/game/game_module.cpp
+    # examples/doodlejump
+    src/examples/doodlejump/DoodleJumpGame.cpp
     # ui
     src/ui/input_manager.cpp
     src/ui/ui_module.cpp
@@ -102,13 +105,26 @@ endif()
 ├── include/
 │   ├── KHR/
 │   │   └── khrplatform.h
+│   ├── fonts/
+│   │   ├── Times New Roman Bold Italic.ttf
+│   │   ├── Times New Roman Bold.ttf
+│   │   ├── Times New Roman Italic.ttf
+│   │   ├── Times New Roman.ttf
+│   │   ├── arial.ttf
+│   │   ├── arial_bold.ttf
+│   │   ├── arial_light.ttf
+│   │   ├── arial_narrow.ttf
+│   │   ├── calibri.ttf
+│   │   ├── calibrib.ttf
+│   │   └── calibrii.ttf
 │   ├── glad/
 │   │   └── glad.h
 │   ├── nlohmann/
 │   │   └── json.hpp
 │   ├── miniaudio.h
 │   ├── stb_image.h
-│   └── stb_image_write.h
+│   ├── stb_image_write.h
+│   └── stb_truetype.h
 ├── src/
 │   ├── assets/
 │   │   ├── asset_manager.cpp
@@ -135,6 +151,12 @@ endif()
 │   │   ├── node.hpp
 │   │   ├── thread_pool.hpp
 │   │   └── type_system.hpp
+│   ├── examples/
+│   │   ├── doodlejump/
+│   │   │   ├── DoodleJumpGame.cpp
+│   │   │   └── DoodleJumpGame.hpp
+│   │   ├── 1.py
+│   │   └── 3tone_heads.txt
 │   ├── game/
 │   │   ├── Game.cpp
 │   │   ├── Game.hpp
@@ -183,6 +205,8 @@ endif()
 │   │   ├── camera.hpp
 │   │   ├── command_buffer.cpp
 │   │   ├── command_buffer.hpp
+│   │   ├── font.cpp
+│   │   ├── font.hpp
 │   │   ├── graphics_device.cpp
 │   │   ├── graphics_device.hpp
 │   │   ├── material.cpp
@@ -217,6 +241,7 @@ endif()
 │   │   ├── ga_spatial.hpp
 │   │   ├── miniaudio_backend.cpp
 │   │   ├── miniaudio_backend.hpp
+│   │   ├── miniaudio_impl.cpp
 │   │   ├── sound_module.cpp
 │   │   └── sound_module.hpp
 │   ├── ui/
@@ -225,12 +250,10 @@ endif()
 │   │   ├── ui_module.cpp
 │   │   └── ui_module.hpp
 │   ├── glad.c
-│   ├── main.cpp
-│   ├── mainGA.cpp
-│   └── mainUI.cpp
+│   └── main.cpp
+├── 1.py
+├── 2.py
 ├── CMakeLists.txt
-├── collectCode.py
-├── collectHead.py
 ├── folder_structure.txt
 └── scrpt.py
 
@@ -1990,78 +2013,6 @@ private:
 } // namespace arxglue::ga
 
 ===
-.\src\game\DoodleJumpGame.hpp
-===
-// src/game/DoodleJumpGame.hpp
-#pragma once
-#include "Game.hpp"
-#include "../core/graph.hpp"
-#include "../core/executor.hpp"
-#include "../core/context.hpp"
-#include "../nodes/uin/ui_nodes.hpp"
-#include <memory>
-#include <vector>
-#include <random>
-
-namespace arxglue::game {
-
-class DoodleJumpGame : public Game {
-public:
-    DoodleJumpGame();
-    ~DoodleJumpGame() override;
-
-protected:
-    void onInit() override;
-    void onUpdate(float deltaTime) override;
-    void onRender() override;
-    void onShutdown() override;
-    void onKey(int key, int scancode, int action, int mods) override;
-    void onMouseButton(int button, int action, int mods) override;
-    void onResize(int width, int height) override;
-
-private:
-    enum class GameState { MainMenu, Playing, Paused };
-    GameState m_state = GameState::MainMenu;
-
-    // UI граф (строится один раз)
-    Graph m_uiGraph;
-    std::unique_ptr<Executor> m_uiExecutor;
-    std::unique_ptr<Context> m_uiContext;
-
-    // Игровые объекты
-    struct Platform { float x, y, w, h; };
-    struct Player { float x, y, vx, vy; float width, height; };
-    Player m_player;
-    std::vector<Platform> m_platforms;
-    std::mt19937 m_rng;
-    float m_cameraY = 0.0f;
-    int m_score = 0;
-    bool m_gameOver = false;
-
-    // Управление
-    bool m_leftPressed = false;
-    bool m_rightPressed = false;
-
-    // Текстуры и меши
-    std::shared_ptr<render::Texture> m_playerTex;
-    std::shared_ptr<render::Texture> m_platformTex;
-    std::shared_ptr<render::Mesh> m_quadMesh;
-    std::shared_ptr<render::Material> m_gameMaterial;
-
-    // Методы UI
-    void buildFullUIGraph();
-
-    // Игровая логика
-    void resetGame();
-    void generateInitialPlatforms();
-    void updatePlatforms(float deltaTime);
-    void checkCollisionsAndJump();
-    void drawGameObjects();
-};
-
-} // namespace arxglue::game
-
-===
 .\src\game\Game.hpp
 ===
 #pragma once
@@ -2089,13 +2040,13 @@ protected:
 
     // Виртуальные методы для переопределения
     virtual void onInit() {}
-    virtual void onUpdate(float deltaTime) {}
+    virtual void onUpdate(float deltaTime) { (void)deltaTime; }
     virtual void onRender() {}
     virtual void onShutdown() {}
-    virtual void onKey(int key, int scancode, int action, int mods) {}
-    virtual void onMouseButton(int button, int action, int mods) {}
-    virtual void onMouseMove(double xpos, double ypos) {}
-    virtual void onResize(int width, int height) {}
+    virtual void onKey(int key, int scancode, int action, int mods) { (void)key; (void)scancode; (void)action; (void)mods; }
+    virtual void onMouseButton(int button, int action, int mods) { (void)button; (void)action; (void)mods; }
+    virtual void onMouseMove(double xpos, double ypos) { (void)xpos; (void)ypos; }
+    virtual void onResize(int width, int height) { (void)width; (void)height; }
 
 private:
     static void keyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
@@ -2598,20 +2549,18 @@ private:
 ===
 .\src\nodes\coren\text_texture_node.hpp
 ===
+// src/nodes/coren/text_texture_node.hpp
 #pragma once
 #include "../../core/node.hpp"
 #include "../../assets/asset_manager.hpp"
 #include <string>
-#include <vector>
-#include <cstdint>
+#include <memory>
 
 namespace arxglue {
 
 class TextTextureNode : public INode {
 public:
-    TextTextureNode(int width = 256, int height = 128, const std::string& text = "", 
-                    uint8_t r = 255, uint8_t g = 255, uint8_t b = 255);
-    
+    TextTextureNode();
     void execute(Context& ctx) override;
     ComponentMetadata getMetadata() const override;
     void setParameter(const std::string& name, const std::any& value) override;
@@ -2620,13 +2569,12 @@ public:
     void deserialize(const nlohmann::json& j) override;
 
 private:
-    int m_width;
-    int m_height;
     std::string m_text;
-    uint8_t m_textR, m_textG, m_textB;
+    std::string m_fontPath = "include/fonts/calibri.ttf";
+    float m_fontSize = 24.0f;
+    uint32_t m_color = 0xFFFFFFFF;
     std::shared_ptr<TextureAsset> m_cachedTexture;
-
-    void generateTexture();
+    std::string m_lastText;
 };
 
 } // namespace arxglue
@@ -3650,6 +3598,13 @@ private:
 #include "render_target.hpp"
 
 namespace arxglue::render {
+	
+struct DrawData {
+    std::shared_ptr<Mesh> mesh;
+    std::shared_ptr<Material> material;
+    std::array<float, 16> transform;
+    std::shared_ptr<Texture> texture; // <-- добавлено
+};
 
 class CommandBuffer {
 public:
@@ -3661,7 +3616,8 @@ public:
     void setViewport(int x, int y, int width, int height);
     void drawMesh(std::shared_ptr<Mesh> mesh,
                   std::shared_ptr<Material> material,
-                  const std::array<float, 16>& transform);
+                  const std::array<float, 16>& transform,
+                  std::shared_ptr<Texture> texture = nullptr);
     void drawScene(const Scene& scene, const Camera& camera);
 
     // Выполнить все записанные команды
@@ -3679,6 +3635,35 @@ private:
 };
 
 } // namespace arxglue::render
+
+===
+.\src\render\font.hpp
+===
+// src/render/font.hpp
+#pragma once
+#include <string>
+#include <memory>
+#include <cstdint>
+
+namespace arxglue {
+    class TextureAsset;
+}
+
+namespace arxglue::ui {
+
+class Font {
+public:
+    Font(const std::string& path, float fontSize);
+    ~Font();
+
+    std::shared_ptr<TextureAsset> renderText(const std::string& text, uint32_t color);
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> pImpl;
+};
+
+} // namespace arxglue::ui
 
 ===
 .\src\render\graphics_device.hpp
@@ -4603,16 +4588,3 @@ namespace arxglue::ui {
 }
 
 < | end of headers | >
-
-< | agent role | > 
-Изучи документацию по проекту 3Tone (documentation) и текущий код (source code, source headers) 
-
-Ты как ИИ агент будешь отвечать за разработку проекта как единственный разработчик, пользователь проверяет и запускает код, сохраняет готовый результат вручную коммитами на гитхабе, он не знает и не умеет писать код, его роль ПМ и интеграция готового кода. 
-Среда разработки: win11 сборщик: CMake. 
-
-Код представляй организованый с прописыванием адреса от корневой папки. к файлу с кодом. 
-Запрещено писать заглушки, коментарии вида "//в реальном проекте тут должна быть реализация", "//для учебного проекта сойдет", "//упростим для демонстрации", вставлять огромные блоки с комментариями в несколько строк с размышлениями и т.д., а также делать упрощенные реализации. Каждая функция должна быть реализована ЭТАЛОННО и ПОЛНО в соответствии с ТЗ (documentation).
-Это первый пакет информации
-1\4
-< | end of role | > 
-Ответь одним словом: Принял

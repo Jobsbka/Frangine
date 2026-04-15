@@ -1,3 +1,4 @@
+// src/nodes/uin/ui_nodes.cpp
 #include "ui_nodes.hpp"
 #include "../node_factory.hpp"
 #include "../../render/graphics_device.hpp"
@@ -91,6 +92,11 @@ static std::shared_ptr<render::Material> createUIMaterial(const std::array<float
 RectNode::RectNode() = default;
 
 void RectNode::execute(Context& ctx) {
+    int currentMode = ctx.getState<int>("ui.mode");
+    if (m_visibleMode != -1 && currentMode != m_visibleMode) {
+        return;
+    }
+
     if (!m_texturePath.empty() && !m_texture) {
         auto asset = AssetManager::instance().loadTexture(m_texturePath);
         if (asset) {
@@ -128,6 +134,7 @@ void RectNode::setParameter(const std::string& name, const std::any& value) {
     else if (name == "color") m_color = std::any_cast<std::array<float,4>>(value);
     else if (name == "texturePath") m_texturePath = std::any_cast<std::string>(value);
     else if (name == "zOrder") m_zOrder = std::any_cast<int>(value);
+    else if (name == "visibleMode") m_visibleMode = std::any_cast<int>(value);
 }
 
 std::any RectNode::getParameter(const std::string& name) const {
@@ -136,6 +143,7 @@ std::any RectNode::getParameter(const std::string& name) const {
     if (name == "color") return m_color;
     if (name == "texturePath") return m_texturePath;
     if (name == "zOrder") return m_zOrder;
+    if (name == "visibleMode") return m_visibleMode;
     return {};
 }
 
@@ -146,6 +154,7 @@ void RectNode::serialize(nlohmann::json& j) const {
     j["params"]["color"] = {m_color[0], m_color[1], m_color[2], m_color[3]};
     j["params"]["texturePath"] = m_texturePath;
     j["params"]["zOrder"] = m_zOrder;
+    j["params"]["visibleMode"] = m_visibleMode;
 }
 
 void RectNode::deserialize(const nlohmann::json& j) {
@@ -156,6 +165,7 @@ void RectNode::deserialize(const nlohmann::json& j) {
         if (p.contains("color")) { auto arr = p["color"]; m_color = {arr[0], arr[1], arr[2], arr[3]}; }
         if (p.contains("texturePath")) m_texturePath = p["texturePath"];
         if (p.contains("zOrder")) m_zOrder = p["zOrder"];
+        if (p.contains("visibleMode")) m_visibleMode = p["visibleMode"];
     }
 }
 
@@ -163,20 +173,32 @@ void RectNode::deserialize(const nlohmann::json& j) {
 TextNode::TextNode() = default;
 
 void TextNode::execute(Context& ctx) {
-    static int frameCount = 0;
-    if (frameCount++ % 60 == 0) {
-        std::cout << "[TextNode] execute, pos=(" << m_position[0] << "," << m_position[1] << ") text=\"" << m_text << "\"" << std::endl;
+    int currentMode = ctx.getState<int>("ui.mode");
+    if (m_visibleMode != -1 && currentMode != m_visibleMode) {
+        return;
     }
+
+    if (!m_textId.empty()) {
+        std::string stateKey = "ui.text." + m_textId;
+        if (ctx.hasState(stateKey)) {
+            std::string newText = ctx.getState<std::string>(stateKey);
+            if (newText != m_text) {
+                m_text = newText;
+                m_cachedTexture.reset();
+            }
+        }
+    }
+
     if (m_text.empty()) return;
 
     if (!m_cachedTexture) {
         std::cout << "[TextNode] Generating texture for text: " << m_text << std::endl;
-        TextTextureNode texNode(static_cast<int>(m_fontSize * m_text.length() * 0.6f),
-                                static_cast<int>(m_fontSize * 1.5f),
-                                m_text,
-                                static_cast<uint8_t>(m_color[0] * 255),
-                                static_cast<uint8_t>(m_color[1] * 255),
-                                static_cast<uint8_t>(m_color[2] * 255));
+        TextTextureNode texNode;
+        texNode.setParameter("text", m_text);
+        texNode.setParameter("colorR", static_cast<int>(m_color[0] * 255));
+        texNode.setParameter("colorG", static_cast<int>(m_color[1] * 255));
+        texNode.setParameter("colorB", static_cast<int>(m_color[2] * 255));
+        texNode.setParameter("fontSize", m_fontSize);
         Context dummyCtx;
         texNode.execute(dummyCtx);
         auto asset = std::any_cast<std::shared_ptr<TextureAsset>>(dummyCtx.output);
@@ -222,6 +244,8 @@ void TextNode::setParameter(const std::string& name, const std::any& value) {
     else if (name == "color") m_color = std::any_cast<std::array<float,3>>(value);
     else if (name == "fontSize") m_fontSize = std::any_cast<float>(value);
     else if (name == "zOrder") m_zOrder = std::any_cast<int>(value);
+    else if (name == "visibleMode") m_visibleMode = std::any_cast<int>(value);
+    else if (name == "id") m_textId = std::any_cast<std::string>(value);
 }
 
 std::any TextNode::getParameter(const std::string& name) const {
@@ -230,6 +254,8 @@ std::any TextNode::getParameter(const std::string& name) const {
     if (name == "color") return m_color;
     if (name == "fontSize") return m_fontSize;
     if (name == "zOrder") return m_zOrder;
+    if (name == "visibleMode") return m_visibleMode;
+    if (name == "id") return m_textId;
     return {};
 }
 
@@ -240,6 +266,8 @@ void TextNode::serialize(nlohmann::json& j) const {
     j["params"]["color"] = {m_color[0], m_color[1], m_color[2]};
     j["params"]["fontSize"] = m_fontSize;
     j["params"]["zOrder"] = m_zOrder;
+    j["params"]["visibleMode"] = m_visibleMode;
+    j["params"]["id"] = m_textId;
 }
 
 void TextNode::deserialize(const nlohmann::json& j) {
@@ -250,6 +278,8 @@ void TextNode::deserialize(const nlohmann::json& j) {
         if (p.contains("color")) { auto arr = p["color"]; m_color = {arr[0], arr[1], arr[2]}; }
         if (p.contains("fontSize")) m_fontSize = p["fontSize"];
         if (p.contains("zOrder")) m_zOrder = p["zOrder"];
+        if (p.contains("visibleMode")) m_visibleMode = p["visibleMode"];
+        if (p.contains("id")) m_textId = p["id"];
     }
 }
 
@@ -257,6 +287,11 @@ void TextNode::deserialize(const nlohmann::json& j) {
 ImageNode::ImageNode() = default;
 
 void ImageNode::execute(Context& ctx) {
+    int currentMode = ctx.getState<int>("ui.mode");
+    if (m_visibleMode != -1 && currentMode != m_visibleMode) {
+        return;
+    }
+
     if (!m_texturePath.empty() && !m_texture) {
         auto asset = AssetManager::instance().loadTexture(m_texturePath);
         if (asset) {
@@ -294,6 +329,7 @@ void ImageNode::setParameter(const std::string& name, const std::any& value) {
     else if (name == "size") m_size = std::any_cast<std::array<float,2>>(value);
     else if (name == "texturePath") { m_texturePath = std::any_cast<std::string>(value); m_texture.reset(); }
     else if (name == "zOrder") m_zOrder = std::any_cast<int>(value);
+    else if (name == "visibleMode") m_visibleMode = std::any_cast<int>(value);
 }
 
 std::any ImageNode::getParameter(const std::string& name) const {
@@ -301,6 +337,7 @@ std::any ImageNode::getParameter(const std::string& name) const {
     if (name == "size") return m_size;
     if (name == "texturePath") return m_texturePath;
     if (name == "zOrder") return m_zOrder;
+    if (name == "visibleMode") return m_visibleMode;
     return {};
 }
 
@@ -310,6 +347,7 @@ void ImageNode::serialize(nlohmann::json& j) const {
     j["params"]["size"] = {m_size[0], m_size[1]};
     j["params"]["texturePath"] = m_texturePath;
     j["params"]["zOrder"] = m_zOrder;
+    j["params"]["visibleMode"] = m_visibleMode;
 }
 
 void ImageNode::deserialize(const nlohmann::json& j) {
@@ -319,6 +357,7 @@ void ImageNode::deserialize(const nlohmann::json& j) {
         if (p.contains("size")) { auto arr = p["size"]; m_size = {arr[0], arr[1]}; }
         if (p.contains("texturePath")) m_texturePath = p["texturePath"];
         if (p.contains("zOrder")) m_zOrder = p["zOrder"];
+        if (p.contains("visibleMode")) m_visibleMode = p["visibleMode"];
     }
 }
 
@@ -326,10 +365,11 @@ void ImageNode::deserialize(const nlohmann::json& j) {
 ButtonNode::ButtonNode() = default;
 
 void ButtonNode::execute(Context& ctx) {
-    static int frameCount = 0;
-    if (frameCount++ % 60 == 0) {
-        std::cout << "[ButtonNode] execute, pos=(" << m_position[0] << "," << m_position[1] << ")" << std::endl;
+    int currentMode = ctx.getState<int>("ui.mode");
+    if (m_visibleMode != -1 && currentMode != m_visibleMode) {
+        return;
     }
+
     float mouseX = ctx.getState<float>("input.mouseX");
     float mouseY = ctx.getState<float>("input.mouseY");
     bool mouseLeft = ctx.getState<bool>("input.mouseLeft");
@@ -346,9 +386,9 @@ void ButtonNode::execute(Context& ctx) {
     bool clicked = m_wasPressed && !pressed;
     m_wasPressed = pressed;
 
-    if (clicked) {
-        ctx.setState("ui.button." + std::to_string(getId()) + ".clicked", true);
-        std::cout << "[ButtonNode] Clicked!" << std::endl;
+    if (clicked && !m_buttonId.empty()) {
+        ctx.setState("ui.button." + m_buttonId + ".clicked", true);
+        std::cout << "[ButtonNode] Clicked! id=" << m_buttonId << std::endl;
     }
 
     auto mesh = createQuadMesh();
@@ -368,6 +408,18 @@ void ButtonNode::execute(Context& ctx) {
     }
     cmds.push_back(cmd);
     ctx.setState("ui.drawCommands", cmds);
+
+    // Текст на кнопке
+    if (!m_text.empty()) {
+        static TextNode textNode;
+        textNode.setParameter("text", m_text);
+        textNode.setParameter("fontSize", 20.0f);
+        textNode.setParameter("color", std::array<float,3>{1.0f,1.0f,1.0f});
+        textNode.setParameter("position", std::array<float,2>{m_position[0] + 10.0f, m_position[1] + 10.0f});
+        textNode.setParameter("zOrder", m_zOrder + 1);
+        textNode.setParameter("visibleMode", -1);
+        textNode.execute(ctx);
+    }
 }
 
 ComponentMetadata ButtonNode::getMetadata() const {
@@ -378,20 +430,24 @@ void ButtonNode::setParameter(const std::string& name, const std::any& value) {
     if (name == "position") m_position = std::any_cast<std::array<float,2>>(value);
     else if (name == "size") m_size = std::any_cast<std::array<float,2>>(value);
     else if (name == "text") m_text = std::any_cast<std::string>(value);
+    else if (name == "id") m_buttonId = std::any_cast<std::string>(value);
     else if (name == "normalColor") m_normalColor = std::any_cast<std::array<float,4>>(value);
     else if (name == "hoverColor") m_hoverColor = std::any_cast<std::array<float,4>>(value);
     else if (name == "pressedColor") m_pressedColor = std::any_cast<std::array<float,4>>(value);
     else if (name == "zOrder") m_zOrder = std::any_cast<int>(value);
+    else if (name == "visibleMode") m_visibleMode = std::any_cast<int>(value);
 }
 
 std::any ButtonNode::getParameter(const std::string& name) const {
     if (name == "position") return m_position;
     if (name == "size") return m_size;
     if (name == "text") return m_text;
+    if (name == "id") return m_buttonId;
     if (name == "normalColor") return m_normalColor;
     if (name == "hoverColor") return m_hoverColor;
     if (name == "pressedColor") return m_pressedColor;
     if (name == "zOrder") return m_zOrder;
+    if (name == "visibleMode") return m_visibleMode;
     return {};
 }
 
@@ -400,10 +456,12 @@ void ButtonNode::serialize(nlohmann::json& j) const {
     j["params"]["position"] = {m_position[0], m_position[1]};
     j["params"]["size"] = {m_size[0], m_size[1]};
     j["params"]["text"] = m_text;
+    j["params"]["id"] = m_buttonId;
     j["params"]["normalColor"] = {m_normalColor[0], m_normalColor[1], m_normalColor[2], m_normalColor[3]};
     j["params"]["hoverColor"] = {m_hoverColor[0], m_hoverColor[1], m_hoverColor[2], m_hoverColor[3]};
     j["params"]["pressedColor"] = {m_pressedColor[0], m_pressedColor[1], m_pressedColor[2], m_pressedColor[3]};
     j["params"]["zOrder"] = m_zOrder;
+    j["params"]["visibleMode"] = m_visibleMode;
 }
 
 void ButtonNode::deserialize(const nlohmann::json& j) {
@@ -412,10 +470,12 @@ void ButtonNode::deserialize(const nlohmann::json& j) {
         if (p.contains("position")) { auto arr = p["position"]; m_position = {arr[0], arr[1]}; }
         if (p.contains("size")) { auto arr = p["size"]; m_size = {arr[0], arr[1]}; }
         if (p.contains("text")) m_text = p["text"];
+        if (p.contains("id")) m_buttonId = p["id"];
         if (p.contains("normalColor")) { auto arr = p["normalColor"]; m_normalColor = {arr[0], arr[1], arr[2], arr[3]}; }
         if (p.contains("hoverColor")) { auto arr = p["hoverColor"]; m_hoverColor = {arr[0], arr[1], arr[2], arr[3]}; }
         if (p.contains("pressedColor")) { auto arr = p["pressedColor"]; m_pressedColor = {arr[0], arr[1], arr[2], arr[3]}; }
         if (p.contains("zOrder")) m_zOrder = p["zOrder"];
+        if (p.contains("visibleMode")) m_visibleMode = p["visibleMode"];
     }
 }
 
@@ -423,10 +483,11 @@ void ButtonNode::deserialize(const nlohmann::json& j) {
 SliderNode::SliderNode() = default;
 
 void SliderNode::execute(Context& ctx) {
-    static int frameCount = 0;
-    if (frameCount++ % 60 == 0) {
-        std::cout << "[SliderNode] execute, pos=(" << m_position[0] << "," << m_position[1] << ") value=" << m_value << std::endl;
+    int currentMode = ctx.getState<int>("ui.mode");
+    if (m_visibleMode != -1 && currentMode != m_visibleMode) {
+        return;
     }
+
     float mouseX = ctx.getState<float>("input.mouseX");
     float mouseY = ctx.getState<float>("input.mouseY");
     bool mouseLeft = ctx.getState<bool>("input.mouseLeft");
@@ -493,6 +554,7 @@ void SliderNode::setParameter(const std::string& name, const std::any& value) {
     else if (name == "fillColor") m_fillColor = std::any_cast<std::array<float,4>>(value);
     else if (name == "handleColor") m_handleColor = std::any_cast<std::array<float,4>>(value);
     else if (name == "zOrder") m_zOrder = std::any_cast<int>(value);
+    else if (name == "visibleMode") m_visibleMode = std::any_cast<int>(value);
 }
 
 std::any SliderNode::getParameter(const std::string& name) const {
@@ -505,6 +567,7 @@ std::any SliderNode::getParameter(const std::string& name) const {
     if (name == "fillColor") return m_fillColor;
     if (name == "handleColor") return m_handleColor;
     if (name == "zOrder") return m_zOrder;
+    if (name == "visibleMode") return m_visibleMode;
     return {};
 }
 
@@ -519,6 +582,7 @@ void SliderNode::serialize(nlohmann::json& j) const {
     j["params"]["fillColor"] = {m_fillColor[0], m_fillColor[1], m_fillColor[2], m_fillColor[3]};
     j["params"]["handleColor"] = {m_handleColor[0], m_handleColor[1], m_handleColor[2], m_handleColor[3]};
     j["params"]["zOrder"] = m_zOrder;
+    j["params"]["visibleMode"] = m_visibleMode;
 }
 
 void SliderNode::deserialize(const nlohmann::json& j) {
@@ -533,6 +597,7 @@ void SliderNode::deserialize(const nlohmann::json& j) {
         if (p.contains("fillColor")) { auto arr = p["fillColor"]; m_fillColor = {arr[0], arr[1], arr[2], arr[3]}; }
         if (p.contains("handleColor")) { auto arr = p["handleColor"]; m_handleColor = {arr[0], arr[1], arr[2], arr[3]}; }
         if (p.contains("zOrder")) m_zOrder = p["zOrder"];
+        if (p.contains("visibleMode")) m_visibleMode = p["visibleMode"];
     }
 }
 
@@ -540,6 +605,11 @@ void SliderNode::deserialize(const nlohmann::json& j) {
 HorizontalLayoutNode::HorizontalLayoutNode() = default;
 
 void HorizontalLayoutNode::execute(Context& ctx) {
+    int currentMode = ctx.getState<int>("ui.mode");
+    if (m_visibleMode != -1 && currentMode != m_visibleMode) {
+        return;
+    }
+
     float x = m_position[0];
     for (auto& child : m_children) {
         child->setParameter("position", std::array<float,2>{x, m_position[1]});
@@ -556,11 +626,13 @@ ComponentMetadata HorizontalLayoutNode::getMetadata() const {
 void HorizontalLayoutNode::setParameter(const std::string& name, const std::any& value) {
     if (name == "position") m_position = std::any_cast<std::array<float,2>>(value);
     else if (name == "spacing") m_spacing = std::any_cast<float>(value);
+    else if (name == "visibleMode") m_visibleMode = std::any_cast<int>(value);
 }
 
 std::any HorizontalLayoutNode::getParameter(const std::string& name) const {
     if (name == "position") return m_position;
     if (name == "spacing") return m_spacing;
+    if (name == "visibleMode") return m_visibleMode;
     return {};
 }
 
@@ -568,6 +640,7 @@ void HorizontalLayoutNode::serialize(nlohmann::json& j) const {
     j["type"] = "HorizontalLayoutNode";
     j["params"]["position"] = {m_position[0], m_position[1]};
     j["params"]["spacing"] = m_spacing;
+    j["params"]["visibleMode"] = m_visibleMode;
 }
 
 void HorizontalLayoutNode::deserialize(const nlohmann::json& j) {
@@ -575,6 +648,7 @@ void HorizontalLayoutNode::deserialize(const nlohmann::json& j) {
         auto& p = j["params"];
         if (p.contains("position")) { auto arr = p["position"]; m_position = {arr[0], arr[1]}; }
         if (p.contains("spacing")) m_spacing = p["spacing"];
+        if (p.contains("visibleMode")) m_visibleMode = p["visibleMode"];
     }
 }
 
@@ -582,6 +656,11 @@ void HorizontalLayoutNode::deserialize(const nlohmann::json& j) {
 VerticalLayoutNode::VerticalLayoutNode() = default;
 
 void VerticalLayoutNode::execute(Context& ctx) {
+    int currentMode = ctx.getState<int>("ui.mode");
+    if (m_visibleMode != -1 && currentMode != m_visibleMode) {
+        return;
+    }
+
     float y = m_position[1];
     for (auto& child : m_children) {
         child->setParameter("position", std::array<float,2>{m_position[0], y});
@@ -598,11 +677,13 @@ ComponentMetadata VerticalLayoutNode::getMetadata() const {
 void VerticalLayoutNode::setParameter(const std::string& name, const std::any& value) {
     if (name == "position") m_position = std::any_cast<std::array<float,2>>(value);
     else if (name == "spacing") m_spacing = std::any_cast<float>(value);
+    else if (name == "visibleMode") m_visibleMode = std::any_cast<int>(value);
 }
 
 std::any VerticalLayoutNode::getParameter(const std::string& name) const {
     if (name == "position") return m_position;
     if (name == "spacing") return m_spacing;
+    if (name == "visibleMode") return m_visibleMode;
     return {};
 }
 
@@ -610,6 +691,7 @@ void VerticalLayoutNode::serialize(nlohmann::json& j) const {
     j["type"] = "VerticalLayoutNode";
     j["params"]["position"] = {m_position[0], m_position[1]};
     j["params"]["spacing"] = m_spacing;
+    j["params"]["visibleMode"] = m_visibleMode;
 }
 
 void VerticalLayoutNode::deserialize(const nlohmann::json& j) {
@@ -617,6 +699,7 @@ void VerticalLayoutNode::deserialize(const nlohmann::json& j) {
         auto& p = j["params"];
         if (p.contains("position")) { auto arr = p["position"]; m_position = {arr[0], arr[1]}; }
         if (p.contains("spacing")) m_spacing = p["spacing"];
+        if (p.contains("visibleMode")) m_visibleMode = p["visibleMode"];
     }
 }
 
@@ -624,6 +707,11 @@ void VerticalLayoutNode::deserialize(const nlohmann::json& j) {
 CanvasNode::CanvasNode() = default;
 
 void CanvasNode::execute(Context& ctx) {
+    int currentMode = ctx.getState<int>("ui.mode");
+    if (m_visibleMode != -1 && currentMode != m_visibleMode) {
+        return;
+    }
+
     ctx.setState("ui.canvasWidth", m_width);
     ctx.setState("ui.canvasHeight", m_height);
     for (auto& child : m_children) {
@@ -638,11 +726,13 @@ ComponentMetadata CanvasNode::getMetadata() const {
 void CanvasNode::setParameter(const std::string& name, const std::any& value) {
     if (name == "width") m_width = std::any_cast<int>(value);
     else if (name == "height") m_height = std::any_cast<int>(value);
+    else if (name == "visibleMode") m_visibleMode = std::any_cast<int>(value);
 }
 
 std::any CanvasNode::getParameter(const std::string& name) const {
     if (name == "width") return m_width;
     if (name == "height") return m_height;
+    if (name == "visibleMode") return m_visibleMode;
     return {};
 }
 
@@ -650,6 +740,7 @@ void CanvasNode::serialize(nlohmann::json& j) const {
     j["type"] = "CanvasNode";
     j["params"]["width"] = m_width;
     j["params"]["height"] = m_height;
+    j["params"]["visibleMode"] = m_visibleMode;
 }
 
 void CanvasNode::deserialize(const nlohmann::json& j) {
@@ -657,10 +748,10 @@ void CanvasNode::deserialize(const nlohmann::json& j) {
         auto& p = j["params"];
         if (p.contains("width")) m_width = p["width"];
         if (p.contains("height")) m_height = p["height"];
+        if (p.contains("visibleMode")) m_visibleMode = p["visibleMode"];
     }
 }
 
-// ---------- Регистрация ----------
 void registerUINodes() {
     auto& factory = NodeFactory::instance();
     factory.registerNode("RectNode", []() { return std::make_unique<RectNode>(); });

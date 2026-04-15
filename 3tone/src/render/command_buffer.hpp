@@ -9,6 +9,13 @@
 #include "render_target.hpp"
 
 namespace arxglue::render {
+	
+struct DrawData {
+    std::shared_ptr<Mesh> mesh;
+    std::shared_ptr<Material> material;
+    std::array<float, 16> transform;
+    std::shared_ptr<Texture> texture; // <-- добавлено
+};
 
 class CommandBuffer {
 public:
@@ -20,7 +27,8 @@ public:
     void setViewport(int x, int y, int width, int height);
     void drawMesh(std::shared_ptr<Mesh> mesh,
                   std::shared_ptr<Material> material,
-                  const std::array<float, 16>& transform);
+                  const std::array<float, 16>& transform,
+                  std::shared_ptr<Texture> texture = nullptr);
     void drawScene(const Scene& scene, const Camera& camera);
 
     // Выполнить все записанные команды
