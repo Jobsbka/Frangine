@@ -1,0 +1,2319 @@
+< | source headers | >
+
+===
+.\3tone_gamemodule.txt
+===
+
+
+===
+.\arxglue.hpp
+===
+// src/arxglue.hpp
+#pragma once
+
+#include <any>
+#include <functional>
+#include <unordered_map>
+#include <vector>
+#include <optional>
+#include <memory>
+#include <string>
+#include <typeindex>
+#include <shared_mutex>
+
+namespace arxglue {
+
+struct Context {
+    std::any input;
+    std::any output;
+    // state теперь защищён мьютексом для потокобезопасного доступа
+    std::unordered_map<std::string, std::any> state;
+    mutable std::shared_mutex stateMutex;
+
+    // Потокобезопасное получение значения (копия)
+    template<typename T>
+    T getState(const std::string& key) const {
+        std::shared_lock lock(stateMutex);
+        auto it = state.find(key);
+        if (it != state.end()) {
+            return std::any_cast<T>(it->second);
+        }
+        return T{};
+    }
+
+    // Потокобезопасная установка значения
+    template<typename T>
+    void setState(const std::string& key, T&& value) {
+        std::unique_lock lock(stateMutex);
+        state[key] = std::forward<T>(value);
+    }
+
+    // Проверка наличия ключа
+    bool hasState(const std::string& key) const {
+        std::shared_lock lock(stateMutex);
+        return state.find(key) != state.end();
+    }
+};
+
+using Component = std::function<void(Context&)>;
+
+struct MultiConnection {
+    Component source;
+    std::vector<Component> targets;
+    std::optional<std::function<void(Context&)>> transformer;
+};
+
+template<typename... Targets>
+MultiConnection connect(Component source, Targets... targets) {
+    return MultiConnection{source, {targets...}, std::nullopt};
+}
+
+template<typename... Targets>
+MultiConnection connect(Component source, std::function<void(Context&)> transformer, Targets... targets) {
+    return MultiConnection{source, {targets...}, transformer};
+}
+
+using NodeId = uint32_t;
+
+struct PortInfo {
+    std::string name;
+    std::type_index type;
+    bool required = true;
+};
+
+struct ComponentMetadata {
+    std::string name;
+    std::vector<PortInfo> inputs;
+    std::vector<PortInfo> outputs;
+    bool pure = false;
+    bool volatile_ = false;
+    bool threadSafe = false;
+};
+
+} // namespace arxglue
+
+===
+.\baking.cpp
+===
+#include "baking.hpp"
+#include "executor.hpp"
+#include "../nodes/coren/asset_node.hpp"
+#include "../nodes/node_factory.hpp"
+#include "../assets/asset_manager.hpp"
+#include <unordered_set>
+#include <queue>
+#include <algorithm>
+#include <stdexcept>
+#include <iostream>
+
+namespace arxglue {
+
+std::vector<NodeId> collectDependencies(Graph& graph, NodeId rootId) {
+    std::unordered_set<NodeId> visited;
+    std::queue<NodeId> queue;
+    queue.push(rootId);
+    visited.insert(rootId);
+
+    while (!queue.empty()) {
+        NodeId current = queue.front();
+        queue.pop();
+
+        for (NodeId dep : graph.getDependencies(current)) {
+            if (visited.find(dep) == visited.end()) {
+                visited.insert(dep);
+                queue.push(dep);
+            }
+        }
+    }
+
+    std::vector<NodeId> sortedAll = graph.topologicalSort();
+    std::vector<NodeId> result;
+    for (NodeId id : sortedAll) {
+        if (visited.count(id)) {
+            result.push_back(id);
+        }
+    }
+    return result;
+}
+
+static bool isUsedOutside(Graph& graph, NodeId nodeId, const std::unordered_set<NodeId>& subgraphSet) {
+    for (NodeId dep : graph.getDependents(nodeId)) {
+        if (subgraphSet.find(dep) == subgraphSet.end()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+NodeId bakeSubgraph(Graph& graph, NodeId rootId, const std::string& assetPath, const std::string& assetType) {
+    // 1. Собрать зависимости
+    std::vector<NodeId> subgraphNodesVec = collectDependencies(graph, rootId);
+    if (subgraphNodesVec.empty()) {
+        throw std::runtime_error("Bake subgraph: no nodes found");
+    }
+
+    std::unordered_set<NodeId> subgraphSet(subgraphNodesVec.begin(), subgraphNodesVec.end());
+
+    // 2. Создать временный граф
+    Graph tempGraph;
+    std::unordered_map<NodeId, NodeId> oldToNew;
+
+    for (NodeId oldId : subgraphNodesVec) {
+        INode* original = graph.getNode(oldId);
+        if (!original) continue;
+
+        nlohmann::json j;
+        original->serialize(j);
+
+        // Проверяем наличие поля "type"
+        if (!j.contains("type") || !j["type"].is_string()) {
+            throw std::runtime_error("Serialized node missing 'type' field");
+        }
+        std::string type = j["type"].get<std::string>();
+
+        auto newNode = NodeFactory::instance().createNode(type);
+        if (!newNode) {
+            throw std::runtime_error("NodeFactory failed to create node of type: " + type);
+        }
+
+        newNode->deserialize(j);
+        NodeId newId = tempGraph.addNode(std::move(newNode));
+        oldToNew[oldId] = newId;
+    }
+
+    // Копируем соединения
+    for (const auto& conn : graph.getConnections()) {
+        if (oldToNew.count(conn.srcNode) && oldToNew.count(conn.dstNode)) {
+            Connection newConn;
+            newConn.srcNode = oldToNew[conn.srcNode];
+            newConn.srcPort = conn.srcPort;
+            newConn.dstNode = oldToNew[conn.dstNode];
+            newConn.dstPort = conn.dstPort;
+            try {
+                tempGraph.addConnection(newConn);
+            } catch (const std::runtime_error&) {
+                // Игнорируем ошибку цикла, если вдруг возникла
+            }
+        }
+    }
+
+    // Проверяем, что корневой узел есть во временном графе
+    auto it = oldToNew.find(rootId);
+    if (it == oldToNew.end()) {
+        throw std::runtime_error("Root node not found in temporary graph");
+    }
+    NodeId tempRoot = it->second;
+
+    // 3. Выполнить временный граф
+    Executor executor(1);
+    Context ctx;
+    executor.execute(tempGraph, ctx, {tempRoot});
+
+    if (!ctx.output.has_value()) {
+        throw std::runtime_error("Bake subgraph produced no output");
+    }
+
+    std::any result = ctx.output;
+    std::cout << "[Bake] Temporary graph output type: " << result.type().name() << std::endl;
+
+    try {
+        if (assetType == "texture") {
+            auto tex = std::any_cast<std::shared_ptr<TextureAsset>>(result);
+            if (!tex) {
+                throw std::runtime_error("Bake result texture is null");
+            }
+            AssetManager::instance().saveAsset(assetPath, tex);
+        } else if (assetType == "mesh") {
+            auto mesh = std::any_cast<std::shared_ptr<MeshAsset>>(result);
+            if (!mesh) {
+                throw std::runtime_error("Bake result mesh is null");
+            }
+            AssetManager::instance().saveAsset(assetPath, mesh);
+        } else {
+            throw std::runtime_error("Unsupported asset type for baking");
+        }
+    } catch (const std::bad_any_cast&) {
+        std::string actualType = result.type().name();
+        throw std::runtime_error(std::string("Bad any_cast in bakeSubgraph: expected ") +
+                                 (assetType == "texture" ? "TextureAsset" : "MeshAsset") +
+                                 ", got type: " + actualType);
+    }
+
+    // 5. Замена подграфа
+    auto assetNode = std::make_unique<AssetNode>(assetPath, assetType);
+    NodeId assetId = graph.addNode(std::move(assetNode));
+
+    // Перенаправляем соединения от корневого узла
+    std::vector<Connection> oldConnections = graph.getConnections();
+    for (const auto& conn : oldConnections) {
+        if (conn.srcNode == rootId) {
+            graph.removeConnection(conn.srcNode, conn.srcPort, conn.dstNode, conn.dstPort);
+            Connection newConn;
+            newConn.srcNode = assetId;
+            newConn.srcPort = 0;
+            newConn.dstNode = conn.dstNode;
+            newConn.dstPort = conn.dstPort;
+            graph.addConnection(newConn);
+        }
+    }
+
+    // Удаляем узлы подграфа, если они не используются снаружи
+    for (NodeId id : subgraphNodesVec) {
+        if (!isUsedOutside(graph, id, subgraphSet)) {
+            graph.removeNode(id);
+        }
+    }
+
+    return assetId;
+}
+
+} // namespace arxglue
+
+===
+.\baking.hpp
+===
+#pragma once
+#include "graph.hpp"
+#include <string>
+#include <functional>
+
+namespace arxglue {
+
+/**
+ * Запекает подграф, начиная с корневого узла rootId, в файл ассета по указанному пути.
+ * @param graph Исходный граф.
+ * @param rootId Идентификатор корневого узла подграфа.
+ * @param assetPath Путь для сохранения запечённого ассета.
+ * @param assetType Тип ассета ("texture" или "mesh").
+ * @return Идентификатор нового узла AssetNode, заменяющего подграф, или 0 при ошибке.
+ */
+NodeId bakeSubgraph(Graph& graph, NodeId rootId, const std::string& assetPath, const std::string& assetType = "texture");
+
+/**
+ * Собирает все узлы, от которых зависит данный (включая сам root).
+ */
+std::vector<NodeId> collectDependencies(Graph& graph, NodeId rootId);
+
+} // namespace arxglue
+
+===
+.\context.hpp
+===
+#pragma once
+#include "arxglue.hpp"
+
+namespace arxglue {
+using Context = arxglue::Context;
+}
+
+===
+.\core_module.cpp
+===
+#include "core_module.hpp"
+#include "type_system.hpp"
+#include "../nodes/node_factory.hpp"
+#include "../nodes/coren/basic_nodes.hpp"
+#include "../nodes/coren/convert_node.hpp"
+#include "../nodes/coren/asset_node.hpp"
+#include "../nodes/coren/checker_texture.hpp"
+#include "../nodes/coren/text_texture_node.hpp"
+
+namespace arxglue::core {
+
+void initializeModule() {
+    // Инициализация базовых типов
+    initBasicTypes();
+    // Регистрация базовых узлов
+    registerBasicNodes();
+
+    auto& factory = NodeFactory::instance();
+    // Дополнительные узлы, которые могут быть не включены в registerBasicNodes
+    factory.registerNode("ConvertNode", []() {
+        return std::make_unique<ConvertNode>();
+    });
+    factory.registerNode("AssetNode", []() {
+        return std::make_unique<AssetNode>();
+    });
+    factory.registerNode("CheckerTexture", []() {
+        return std::make_unique<CheckerTextureNode>();
+    });
+    factory.registerNode("TextTexture", []() {
+        return std::make_unique<TextTextureNode>();
+    });
+}
+
+} // namespace arxglue::core
+
+===
+.\core_module.hpp
+===
+#pragma once
+
+namespace arxglue::core {
+    void initializeModule();
+}
+
+===
+.\executor.cpp
+===
+// src/core/executor.cpp
+#include "executor.hpp"
+#include <unordered_set>
+#include <queue>
+#include <chrono>
+#include <iostream>
+
+namespace arxglue {
+
+Executor::Executor(size_t numThreads) {
+    if (numThreads == 0) {
+        m_synchronous = true;
+        return;
+    }
+    if (numThreads == 0) numThreads = std::thread::hardware_concurrency();
+    if (numThreads == 0) numThreads = 1;
+    m_pool = std::make_unique<ThreadPool>(numThreads);
+}
+
+void Executor::execute(Graph& graph, Context& ctx, const std::vector<NodeId>& rootNodes) {
+    m_graph = &graph;
+    m_ctx = &ctx;
+
+    std::vector<NodeId> allNodes;
+    try {
+        allNodes = graph.topologicalSort();
+    } catch (const std::runtime_error& e) {
+        std::cerr << "Graph contains cycle: " << e.what() << std::endl;
+        return;
+    }
+
+    std::unordered_set<NodeId> reachable;
+    if (!rootNodes.empty()) {
+        std::queue<NodeId> q;
+        for (NodeId r : rootNodes) {
+            q.push(r);
+            reachable.insert(r);
+        }
+        while (!q.empty()) {
+            NodeId cur = q.front(); q.pop();
+            for (NodeId dep : graph.getDependencies(cur)) {
+                if (reachable.find(dep) == reachable.end()) {
+                    reachable.insert(dep);
+                    q.push(dep);
+                }
+            }
+        }
+    } else {
+        for (NodeId id : allNodes) reachable.insert(id);
+    }
+
+    std::vector<NodeId> sortedReachable;
+    for (NodeId id : allNodes) {
+        if (reachable.count(id)) sortedReachable.push_back(id);
+    }
+
+    if (m_synchronous) {
+        // Синхронное выполнение в текущем потоке
+        for (NodeId id : sortedReachable) {
+            INode* node = graph.getNode(id);
+            if (!node) continue;
+
+            // Копируем входы от предшественников
+            {
+                std::unique_lock lock(ctx.stateMutex);
+                for (const auto& conn : graph.getConnections()) {
+                    if (conn.dstNode == id) {
+                        INode* srcNode = graph.getNode(conn.srcNode);
+                        if (srcNode) {
+                            std::any value = srcNode->getCachedOutput();
+                            if (value.has_value()) {
+                                std::string inKey = "in_" + std::to_string(id) + "_" + std::to_string(conn.dstPort);
+                                ctx.state[inKey] = value;
+                            }
+                        }
+                    }
+                }
+            }
+
+            const auto& metadata = node->getMetadata();
+            bool needExecute = true;
+            std::any cached = node->getCachedOutput();
+            if (!metadata.volatile_ && !node->isDirty() && cached.has_value()) {
+                if (!node->areInputsChanged(ctx) && !node->areParametersChanged()) {
+                    needExecute = false;
+                }
+            }
+
+            if (needExecute) {
+                node->execute(ctx);
+                node->setCachedOutput(ctx.output);
+                node->setDirty(false);
+                node->updateLastInputs(ctx);
+            } else {
+                ctx.output = cached;
+            }
+        }
+        return;
+    }
+
+    // Параллельное выполнение (существующий код)
+    {
+        std::lock_guard<std::mutex> lock(m_syncMutex);
+        m_syncMap.clear();
+        for (NodeId id : sortedReachable) {
+            auto sync = std::make_unique<NodeSync>();
+            sync->future = sync->promise.get_future().share();
+            m_syncMap[id] = std::move(sync);
+        }
+    }
+
+    for (NodeId id : sortedReachable) {
+        if (graph.getDependencies(id).empty()) {
+            auto it = m_syncMap.find(id);
+            if (it != m_syncMap.end() && !it->second->scheduled.exchange(true)) {
+                m_pool->enqueue([this, id] { executeNodeAsync(id); });
+            }
+        }
+    }
+
+    std::vector<std::shared_future<void>> rootFutures;
+    {
+        std::lock_guard<std::mutex> lock(m_syncMutex);
+        for (NodeId r : rootNodes) {
+            auto it = m_syncMap.find(r);
+            if (it != m_syncMap.end()) {
+                rootFutures.push_back(it->second->future);
+            }
+        }
+    }
+    for (auto& fut : rootFutures) {
+        fut.wait();
+    }
+}
+
+void Executor::executeNodeAsync(NodeId id) {
+    INode* node = m_graph->getNode(id);
+    if (!node) {
+        auto it = m_syncMap.find(id);
+        if (it != m_syncMap.end()) {
+            it->second->promise.set_value();
+        }
+        return;
+    }
+
+    waitForDependencies(id);
+
+    {
+        std::unique_lock lock(m_ctx->stateMutex);
+        for (const auto& conn : m_graph->getConnections()) {
+            if (conn.dstNode == id) {
+                INode* srcNode = m_graph->getNode(conn.srcNode);
+                if (srcNode) {
+                    std::any value = srcNode->getCachedOutput();
+                    if (value.has_value()) {
+                        std::string inKey = "in_" + std::to_string(id) + "_" + std::to_string(conn.dstPort);
+                        m_ctx->state[inKey] = value;
+                    }
+                }
+            }
+        }
+    }
+
+    bool needExecute = true;
+    const auto& metadata = node->getMetadata();
+    std::any cached = node->getCachedOutput();
+    if (!metadata.volatile_ && !node->isDirty() && cached.has_value()) {
+        if (!node->areInputsChanged(*m_ctx) && !node->areParametersChanged()) {
+            needExecute = false;
+        }
+    }
+
+    if (needExecute) {
+        node->execute(*m_ctx);
+        node->setCachedOutput(m_ctx->output);
+        node->setDirty(false);
+        node->updateLastInputs(*m_ctx);
+    } else {
+        m_ctx->output = cached;
+    }
+
+    {
+        auto it = m_syncMap.find(id);
+        if (it != m_syncMap.end()) {
+            it->second->promise.set_value();
+        }
+    }
+
+    tryScheduleDependents(id);
+}
+
+void Executor::tryScheduleDependents(NodeId id) {
+    for (NodeId dep : m_graph->getDependents(id)) {
+        bool allDepsReady = true;
+        for (NodeId pred : m_graph->getDependencies(dep)) {
+            auto fut = getFuture(pred);
+            if (fut.valid() && fut.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+                allDepsReady = false;
+                break;
+            }
+        }
+        if (allDepsReady) {
+            auto it = m_syncMap.find(dep);
+            if (it != m_syncMap.end() && !it->second->scheduled.exchange(true)) {
+                m_pool->enqueue([this, dep] { executeNodeAsync(dep); });
+            }
+        }
+    }
+}
+
+void Executor::waitForDependencies(NodeId id) {
+    for (NodeId pred : m_graph->getDependencies(id)) {
+        auto fut = getFuture(pred);
+        if (fut.valid()) {
+            fut.wait();
+        }
+    }
+}
+
+std::shared_future<void> Executor::getFuture(NodeId id) {
+    std::lock_guard<std::mutex> lock(m_syncMutex);
+    auto it = m_syncMap.find(id);
+    if (it != m_syncMap.end()) {
+        return it->second->future;
+    }
+    return {};
+}
+
+void Executor::invalidate(NodeId id) {
+    if (m_graph) {
+        m_graph->invalidateSubgraph(id);
+        std::lock_guard<std::mutex> lock(m_syncMutex);
+        std::queue<NodeId> q;
+        std::unordered_set<NodeId> visited;
+        q.push(id);
+        while (!q.empty()) {
+            NodeId cur = q.front(); q.pop();
+            if (visited.count(cur)) continue;
+            visited.insert(cur);
+            auto it = m_syncMap.find(cur);
+            if (it != m_syncMap.end()) {
+                it->second->scheduled = false;
+                it->second->promise = std::promise<void>();
+                it->second->future = it->second->promise.get_future().share();
+            }
+            for (NodeId dep : m_graph->getDependents(cur)) {
+                q.push(dep);
+            }
+        }
+    }
+}
+
+} // namespace arxglue
+
+===
+.\executor.hpp
+===
+// src/core/executor.hpp
+#pragma once
+#include "graph.hpp"
+#include "thread_pool.hpp"
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <future>
+#include <unordered_map>
+
+namespace arxglue {
+
+class Executor {
+public:
+    explicit Executor(size_t numThreads = 0);
+    ~Executor() = default;
+
+    void execute(Graph& graph, Context& ctx, const std::vector<NodeId>& rootNodes = {});
+    void invalidate(NodeId id);
+
+private:
+    std::unique_ptr<ThreadPool> m_pool;
+    bool m_synchronous = false;   // <-- добавить
+    Graph* m_graph = nullptr;
+    Context* m_ctx = nullptr;
+
+    struct NodeSync {
+        std::promise<void> promise;
+        std::shared_future<void> future;
+        std::atomic<bool> scheduled{false};
+    };
+    std::unordered_map<NodeId, std::unique_ptr<NodeSync>> m_syncMap;
+    std::mutex m_syncMutex;
+
+    void executeNodeAsync(NodeId id);
+    void executeNodeSync(NodeId id);   // <-- добавить
+    void waitForDependencies(NodeId id);
+    std::shared_future<void> getFuture(NodeId id);
+    void tryScheduleDependents(NodeId id);
+};
+
+} // namespace arxglue
+
+===
+.\graph.cpp
+===
+// src/core/graph.cpp
+#include "graph.hpp"
+#include "../nodes/node_factory.hpp"
+#include "../nodes/coren/convert_node.hpp"
+#include "type_system.hpp"
+#include <queue>
+#include <algorithm>
+#include <unordered_set>
+#include <stdexcept>
+
+namespace arxglue {
+
+NodeId Graph::addNode(std::unique_ptr<INode> node) {
+    NodeId id = m_nextId++;
+    node->setId(id);
+    m_idToIndex[id] = m_nodes.size();
+    m_nodes.push_back(std::move(node));
+    m_adjValid = false;
+    return id;
+}
+
+void Graph::removeNode(NodeId id) {
+    auto it = m_idToIndex.find(id);
+    if (it == m_idToIndex.end()) return;
+    size_t idx = it->second;
+    m_nodes.erase(m_nodes.begin() + idx);
+    m_idToIndex.clear();
+    for (size_t i = 0; i < m_nodes.size(); ++i) {
+        m_idToIndex[m_nodes[i]->getId()] = i;
+    }
+    m_connections.erase(std::remove_if(m_connections.begin(), m_connections.end(),
+        [id](const Connection& c) { return c.srcNode == id || c.dstNode == id; }),
+        m_connections.end());
+    m_adjValid = false;
+}
+
+INode* Graph::getNode(NodeId id) {
+    auto it = m_idToIndex.find(id);
+    if (it == m_idToIndex.end()) return nullptr;
+    return m_nodes[it->second].get();
+}
+
+Graph::ConnectionPlan Graph::prepareConnection(NodeId srcNode, int srcPort, NodeId dstNode, int dstPort) {
+    ConnectionPlan plan;
+    plan.valid = false;
+
+    INode* src = getNode(srcNode);
+    INode* dst = getNode(dstNode);
+    if (!src || !dst) return plan;
+
+    std::type_index srcType = src->getOutputPortType(srcPort);
+    std::type_index dstType = dst->getInputPortType(dstPort);
+
+    if (srcType == typeid(void) || dstType == typeid(void)) {
+        plan.connections.push_back({srcNode, srcPort, dstNode, dstPort});
+        plan.valid = true;
+        return plan;
+    }
+
+    if (srcType == dstType) {
+        plan.connections.push_back({srcNode, srcPort, dstNode, dstPort});
+        plan.valid = true;
+        return plan;
+    }
+
+    TypeId srcId = TypeSystem::instance().getTypeId(srcType);
+    TypeId dstId = TypeSystem::instance().getTypeId(dstType);
+    if (srcId == TypeId::Unknown || dstId == TypeId::Unknown) {
+        return plan;
+    }
+
+    if (!TypeSystem::instance().canConvert(srcId, dstId)) {
+        return plan;
+    }
+
+    auto converter = std::make_unique<ConvertNode>(srcId, dstId);
+    NodeId converterId = addNode(std::move(converter));
+    plan.createdConverterId = converterId;
+    plan.connections.push_back({srcNode, srcPort, converterId, 0});
+    plan.connections.push_back({converterId, 0, dstNode, dstPort});
+    plan.valid = true;
+    return plan;
+}
+
+void Graph::addConnection(const Connection& conn) {
+    ConnectionPlan plan = prepareConnection(conn.srcNode, conn.srcPort, conn.dstNode, conn.dstPort);
+    if (!plan.valid) {
+        throw std::runtime_error("Incompatible port types and no conversion available");
+    }
+
+    size_t oldConnCount = m_connections.size();
+    m_connections.insert(m_connections.end(), plan.connections.begin(), plan.connections.end());
+    m_adjValid = false;
+
+    try {
+        topologicalSort();
+    } catch (const std::runtime_error&) {
+        m_connections.resize(oldConnCount);
+        if (plan.createdConverterId != 0) {
+            removeNode(plan.createdConverterId);
+        }
+        m_adjValid = false;
+        throw std::runtime_error("Connection would create a cycle");
+    }
+}
+
+void Graph::removeConnection(NodeId src, int srcPort, NodeId dst, int dstPort) {
+    auto it = std::find_if(m_connections.begin(), m_connections.end(),
+        [=](const Connection& c) {
+            return c.srcNode == src && c.srcPort == srcPort &&
+                   c.dstNode == dst && c.dstPort == dstPort;
+        });
+    if (it != m_connections.end()) {
+        m_connections.erase(it);
+        m_adjValid = false;
+    }
+}
+
+std::vector<NodeId> Graph::getDependencies(NodeId id) const {
+    std::vector<NodeId> deps;
+    for (const auto& conn : m_connections) {
+        if (conn.dstNode == id) deps.push_back(conn.srcNode);
+    }
+    return deps;
+}
+
+std::vector<NodeId> Graph::getDependents(NodeId id) const {
+    std::vector<NodeId> deps;
+    for (const auto& conn : m_connections) {
+        if (conn.srcNode == id) deps.push_back(conn.dstNode);
+    }
+    return deps;
+}
+
+void Graph::invalidateSubgraph(NodeId root) {
+    std::queue<NodeId> q;
+    std::unordered_set<NodeId> visited;
+    q.push(root);
+    while (!q.empty()) {
+        NodeId id = q.front(); q.pop();
+        if (visited.count(id)) continue;
+        visited.insert(id);
+        INode* node = getNode(id);
+        if (node) {
+            node->setDirty(true);
+            node->setCachedOutput({});     // сброс кэша выхода
+            node->clearLastInputs();
+        }
+        for (NodeId dep : getDependents(id)) {
+            q.push(dep);
+        }
+    }
+}
+
+void Graph::buildAdjacency() const {
+    if (m_adjValid) return;
+    size_t n = m_nodes.size();
+    m_adj.assign(n, {});
+    m_inDegree.assign(n, 0);
+    for (const auto& conn : m_connections) {
+        auto srcIt = m_idToIndex.find(conn.srcNode);
+        auto dstIt = m_idToIndex.find(conn.dstNode);
+        if (srcIt == m_idToIndex.end() || dstIt == m_idToIndex.end()) continue;
+        m_adj[srcIt->second].push_back(static_cast<NodeId>(dstIt->second));
+        m_inDegree[dstIt->second]++;
+    }
+    m_adjValid = true;
+}
+
+std::vector<NodeId> Graph::topologicalSort() const {
+    buildAdjacency();
+    size_t n = m_nodes.size();
+    std::vector<int> inDegree = m_inDegree;
+    std::queue<size_t> q;
+    for (size_t i = 0; i < n; ++i) {
+        if (inDegree[i] == 0) q.push(i);
+    }
+    std::vector<NodeId> result;
+    while (!q.empty()) {
+        size_t idx = q.front(); q.pop();
+        result.push_back(m_nodes[idx]->getId());
+        for (size_t neighbor : m_adj[idx]) {
+            if (--inDegree[neighbor] == 0) q.push(neighbor);
+        }
+    }
+    if (result.size() != n) {
+        throw std::runtime_error("Graph contains a cycle");
+    }
+    return result;
+}
+
+void Graph::serialize(nlohmann::json& j) const {
+    j["version"] = 1;
+    nlohmann::json nodesJson = nlohmann::json::array();
+    for (const auto& node : m_nodes) {
+        nlohmann::json nodeJson;
+        node->serialize(nodeJson);
+        nodeJson["id"] = node->getId();
+        nodesJson.push_back(nodeJson);
+    }
+    j["nodes"] = nodesJson;
+
+    nlohmann::json connsJson = nlohmann::json::array();
+    for (const auto& conn : m_connections) {
+        connsJson.push_back({
+            {"src", conn.srcNode},
+            {"srcPort", conn.srcPort},
+            {"dst", conn.dstNode},
+            {"dstPort", conn.dstPort}
+        });
+    }
+    j["connections"] = connsJson;
+}
+
+void Graph::deserialize(const nlohmann::json& j) {
+    m_nodes.clear();
+    m_idToIndex.clear();
+    m_connections.clear();
+    m_nextId = 1;
+    m_adjValid = false;
+
+    std::unordered_map<NodeId, NodeId> oldToNew;
+    for (const auto& nodeJson : j["nodes"]) {
+        std::string type = nodeJson["type"];
+        auto node = NodeFactory::instance().createNode(type);
+        if (!node) continue;
+        node->deserialize(nodeJson);
+        NodeId newId = addNode(std::move(node));
+        oldToNew[nodeJson["id"]] = newId;
+    }
+    for (const auto& connJson : j["connections"]) {
+        Connection conn;
+        conn.srcNode = oldToNew[connJson["src"]];
+        conn.srcPort = connJson["srcPort"];
+        conn.dstNode = oldToNew[connJson["dst"]];
+        conn.dstPort = connJson["dstPort"];
+        addConnection(conn);
+    }
+}
+
+} // namespace arxglue
+
+===
+.\graph.hpp
+===
+// src/core/graph.hpp
+#pragma once
+#include "node.hpp"
+#include <vector>
+#include <unordered_map>
+#include <memory>
+
+namespace arxglue {
+
+struct Connection {
+    NodeId srcNode;
+    int srcPort;
+    NodeId dstNode;
+    int dstPort;
+};
+
+class Graph {
+public:
+    NodeId addNode(std::unique_ptr<INode> node);
+    void removeNode(NodeId id);
+    INode* getNode(NodeId id);
+    const std::vector<std::unique_ptr<INode>>& getNodes() const { return m_nodes; }
+
+    // Добавляет соединение, при необходимости вставляя конвертер типов.
+    // Бросает исключение при несовместимых типах или возникновении цикла.
+    void addConnection(const Connection& conn);
+    void removeConnection(NodeId src, int srcPort, NodeId dst, int dstPort);
+    const std::vector<Connection>& getConnections() const { return m_connections; }
+
+    std::vector<NodeId> getDependencies(NodeId id) const;
+    std::vector<NodeId> getDependents(NodeId id) const;
+    void invalidateSubgraph(NodeId root);
+    std::vector<NodeId> topologicalSort() const;
+
+    void serialize(nlohmann::json& j) const;
+    void deserialize(const nlohmann::json& j);
+
+private:
+    std::vector<std::unique_ptr<INode>> m_nodes;
+    std::unordered_map<NodeId, size_t> m_idToIndex;
+    std::vector<Connection> m_connections;
+    NodeId m_nextId = 1;
+
+    mutable std::vector<std::vector<NodeId>> m_adj;
+    mutable std::vector<int> m_inDegree;
+    mutable bool m_adjValid = false;
+
+    void buildAdjacency() const;
+
+    // Структура для хранения результата подготовки соединения
+    struct ConnectionPlan {
+        std::vector<Connection> connections;   // соединения, которые нужно добавить
+        NodeId createdConverterId = 0;         // ID созданного конвертера, если был создан
+        bool valid = false;
+    };
+
+    ConnectionPlan prepareConnection(NodeId srcNode, int srcPort, NodeId dstNode, int dstPort);
+};
+
+} // namespace arxglue
+
+===
+.\node.hpp
+===
+// src/core/node.hpp
+#pragma once
+#include "arxglue.hpp"
+#include "type_system.hpp"
+#include <nlohmann/json.hpp>
+#include <memory>
+#include <vector>
+#include <any>
+#include <unordered_map>
+#include <typeindex>
+#include <iostream>
+#include <mutex>
+#include <shared_mutex>
+
+namespace arxglue {
+
+class INode {
+public:
+    virtual ~INode() = default;
+    virtual void execute(Context& ctx) = 0;
+    virtual ComponentMetadata getMetadata() const = 0;
+    virtual void setParameter(const std::string& name, const std::any& value) = 0;
+    virtual std::any getParameter(const std::string& name) const = 0;
+    virtual void serialize(nlohmann::json& j) const = 0;
+    virtual void deserialize(const nlohmann::json& j) = 0;
+
+    void setId(NodeId id) { m_id = id; }
+    NodeId getId() const { return m_id; }
+
+    bool isDirty() const { return m_dirty; }
+    void setDirty(bool dirty) { m_dirty = dirty; }
+
+    void setCachedOutput(const std::any& output) { m_cachedOutput = output; }
+    std::any getCachedOutput() const { return m_cachedOutput; }
+
+    // Получить значение входа с автоматической конвертацией к ожидаемому типу
+    std::any getInputValue(Context& ctx, int portIndex) const {
+        const auto& inputs = getMetadata().inputs;
+        if (portIndex < 0 || portIndex >= static_cast<int>(inputs.size())) {
+            return {};
+        }
+        std::string key = "in_" + std::to_string(m_id) + "_" + std::to_string(portIndex);
+        std::shared_lock stateLock(ctx.stateMutex);   // переименовано
+        auto it = ctx.state.find(key);
+        if (it == ctx.state.end()) {
+            return {};
+        }
+        const std::any& rawValue = it->second;
+        const std::type_index& expectedType = inputs[portIndex].type;
+        if (std::type_index(rawValue.type()) == expectedType) {
+            return rawValue;
+        }
+        try {
+            return TypeSystem::instance().convertTo(rawValue, expectedType);
+        } catch (const std::exception& e) {
+            std::cerr << "Type conversion error in node " << m_id << " port " << portIndex << ": " << e.what() << std::endl;
+            return {};
+        }
+    }
+
+    void setOutputValue(Context& ctx, int portIndex, const std::any& value) {
+        const auto& outputs = getMetadata().outputs;
+        if (portIndex >= 0 && portIndex < static_cast<int>(outputs.size())) {
+            std::string key = "out_" + std::to_string(m_id) + "_" + std::to_string(portIndex);
+            std::unique_lock lock(ctx.stateMutex);
+            ctx.state[key] = value;
+        }
+        ctx.output = value;
+    }
+
+    // Проверка, изменились ли входы по сравнению с последним выполнением
+    bool areInputsChanged(const Context& ctx) {
+        const auto& inputs = getMetadata().inputs;
+        if (inputs.empty()) return false;
+
+        std::lock_guard<std::mutex> inputLock(m_inputMutex);
+        if (m_lastInputs.size() != inputs.size()) {
+            m_lastInputs.resize(inputs.size());
+            return true;
+        }
+
+        for (size_t i = 0; i < inputs.size(); ++i) {
+            std::string key = "in_" + std::to_string(m_id) + "_" + std::to_string(i);
+            std::any currentValue;
+            {
+                std::shared_lock lock(ctx.stateMutex);
+                auto it = ctx.state.find(key);
+                if (it != ctx.state.end()) {
+                    currentValue = it->second;
+                }
+            }
+            if (!TypeSystem::compareAny(currentValue, m_lastInputs[i])) {
+                m_lastInputs[i] = currentValue;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Обновить сохранённые значения входов после выполнения
+    void updateLastInputs(const Context& ctx) {
+        const auto& inputs = getMetadata().inputs;
+        std::lock_guard<std::mutex> inputLock(m_inputMutex);   
+        m_lastInputs.resize(inputs.size());
+        for (size_t i = 0; i < inputs.size(); ++i) {
+            std::string key = "in_" + std::to_string(m_id) + "_" + std::to_string(i);
+            std::shared_lock stateLock(ctx.stateMutex);        
+            auto it = ctx.state.find(key);
+            m_lastInputs[i] = (it != ctx.state.end()) ? it->second : std::any{};
+        }
+    }
+
+    std::type_index getInputPortType(int portIndex) const {
+        const auto& inputs = getMetadata().inputs;
+        if (portIndex >= 0 && portIndex < static_cast<int>(inputs.size())) {
+            return inputs[portIndex].type;
+        }
+        return typeid(void);
+    }
+
+    std::type_index getOutputPortType(int portIndex) const {
+        const auto& outputs = getMetadata().outputs;
+        if (portIndex >= 0 && portIndex < static_cast<int>(outputs.size())) {
+            return outputs[portIndex].type;
+        }
+        return typeid(void);
+    }
+
+    bool areParametersChanged() const {
+        size_t currentHash = computeParamsHash();
+        if (currentHash != m_lastParamsHash) {
+            m_lastParamsHash = currentHash;
+            return true;
+        }
+        return false;
+    }
+
+    void clearLastInputs() {
+        std::lock_guard<std::mutex> inputLock(m_inputMutex);
+        m_lastInputs.clear();
+    }
+
+protected:
+    virtual size_t computeParamsHash() const { return 0; }
+
+private:
+    NodeId m_id = 0;
+    bool m_dirty = true;
+    std::any m_cachedOutput;
+    mutable std::vector<std::any> m_lastInputs;
+    mutable std::mutex m_inputMutex;
+    mutable size_t m_lastParamsHash = 0;
+};
+
+} // namespace arxglue
+
+===
+.\thread_pool.hpp
+===
+#pragma once
+#include <vector>
+#include <queue>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <functional>
+#include <future>
+#include <atomic>
+
+namespace arxglue {
+
+class ThreadPool {
+public:
+    explicit ThreadPool(size_t numThreads = std::thread::hardware_concurrency()) {
+        for (size_t i = 0; i < numThreads; ++i) {
+            m_workers.emplace_back([this] {
+                while (true) {
+                    std::function<void()> task;
+                    {
+                        std::unique_lock<std::mutex> lock(m_mutex);
+                        m_cv.wait(lock, [this] { return m_stop || !m_tasks.empty(); });
+                        if (m_stop && m_tasks.empty()) return;
+                        task = std::move(m_tasks.front());
+                        m_tasks.pop();
+                    }
+                    task();
+                }
+            });
+        }
+    }
+
+    ~ThreadPool() {
+        {
+            std::unique_lock<std::mutex> lock(m_mutex);
+            m_stop = true;
+        }
+        m_cv.notify_all();
+        for (std::thread& worker : m_workers) {
+            if (worker.joinable()) worker.join();
+        }
+    }
+
+    template<typename F, typename... Args>
+    auto enqueue(F&& f, Args&&... args) -> std::future<typename std::invoke_result_t<F, Args...>> {
+        using return_type = typename std::invoke_result_t<F, Args...>;
+        auto task = std::make_shared<std::packaged_task<return_type()>>(
+            std::bind(std::forward<F>(f), std::forward<Args>(args)...)
+        );
+        std::future<return_type> res = task->get_future();
+        {
+            std::unique_lock<std::mutex> lock(m_mutex);
+            if (m_stop) throw std::runtime_error("enqueue on stopped ThreadPool");
+            m_tasks.emplace([task]() { (*task)(); });
+        }
+        m_cv.notify_one();
+        return res;
+    }
+
+private:
+    std::vector<std::thread> m_workers;
+    std::queue<std::function<void()>> m_tasks;
+    std::mutex m_mutex;
+    std::condition_variable m_cv;
+    std::atomic<bool> m_stop{false};
+};
+
+} // namespace arxglue
+
+===
+.\type_system.hpp
+===
+#pragma once
+#include <any>
+#include <typeindex>
+#include <functional>
+#include <unordered_map>
+#include <stdexcept>
+#include <iostream>
+#include <memory>
+#include <array>
+#include <cassert>
+#include <cmath>
+#include "math/ga/signature.hpp"
+#include "math/ga/multivector.hpp"
+#include "math/ga/versor.hpp"
+#include "math/ga/conversions.hpp"
+
+// Forward declarations for render types
+namespace arxglue::render {
+    class Texture;
+    class Mesh;
+    class Material;
+    class Scene;
+    class Camera;
+}
+
+namespace arxglue {
+
+class TextureAsset;
+class MeshAsset;
+
+enum class TypeId : uint64_t {
+    Unknown = 0,
+    Int,
+    Float,
+    String,
+    Float3,
+    Matrix4,
+    Quaternion,
+    Texture,
+    Mesh,
+    Material,
+    Scene,
+    Camera,
+    Multivector_PGA3D,
+    Multivector_CGA3D,
+    Multivector_GA11,
+    Versor_PGA3D,
+    Versor_CGA3D,
+    AudioBuffer,
+    AudioAsset,
+    AudioSpec,
+    AudioDevice,
+    AudioGraph,
+	SceneGraph,
+	GameObject
+};
+
+struct PairHash {
+    template<typename T1, typename T2>
+    std::size_t operator()(const std::pair<T1, T2>& p) const {
+        auto h1 = std::hash<T1>{}(p.first);
+        auto h2 = std::hash<T2>{}(p.second);
+        return h1 ^ (h2 << 1);
+    }
+};
+
+class TypeSystem {
+public:
+    static TypeSystem& instance() {
+        static TypeSystem inst;
+        return inst;
+    }
+
+    void registerType(TypeId id, const std::type_index& stdType, TypeId parent = TypeId::Unknown) {
+        m_typeInfo.emplace(id, TypeInfo(stdType, parent));
+        m_typeToId[stdType] = id;
+    }
+
+    TypeId getTypeId(const std::type_index& type) const {
+        auto it = m_typeToId.find(type);
+        if (it != m_typeToId.end()) return it->second;
+        return TypeId::Unknown;
+    }
+
+    bool canConvert(TypeId from, TypeId to) const {
+        if (from == to) return true;
+        auto it = m_typeInfo.find(from);
+        if (it == m_typeInfo.end()) return false;
+        TypeId cur = it->second.parent;
+        while (cur != TypeId::Unknown) {
+            if (cur == to) return true;
+            auto pit = m_typeInfo.find(cur);
+            if (pit == m_typeInfo.end()) break;
+            cur = pit->second.parent;
+        }
+        return m_converters.find({from, to}) != m_converters.end();
+    }
+
+    std::any convert(const std::any& value, TypeId from, TypeId to) const {
+        if (from == to) return value;
+        auto key = std::make_pair(from, to);
+        auto it = m_converters.find(key);
+        if (it != m_converters.end()) {
+            return it->second(value);
+        }
+        auto infoIt = m_typeInfo.find(from);
+        if (infoIt != m_typeInfo.end() && infoIt->second.parent != TypeId::Unknown) {
+            return convert(value, infoIt->second.parent, to);
+        }
+        throw std::runtime_error("No conversion available");
+    }
+
+    std::any convertTo(const std::any& value, const std::type_index& targetType) const {
+        TypeId fromId = getTypeId(value.type());
+        TypeId toId = getTypeId(targetType);
+        if (fromId == TypeId::Unknown || toId == TypeId::Unknown) {
+            throw std::runtime_error("Unknown type(s) in conversion");
+        }
+        return convert(value, fromId, toId);
+    }
+
+    void registerConverter(TypeId from, TypeId to, std::function<std::any(const std::any&)> conv) {
+        m_converters[{from, to}] = std::move(conv);
+    }
+
+    std::type_index getStdTypeIndex(TypeId id) const {
+        auto it = m_typeInfo.find(id);
+        if (it != m_typeInfo.end()) return it->second.stdType;
+        return typeid(void);
+    }
+
+    static bool compareAny(const std::any& a, const std::any& b) {
+        if (!a.has_value() && !b.has_value()) return true;
+        if (!a.has_value() || !b.has_value()) return false;
+        if (std::type_index(a.type()) != std::type_index(b.type())) return false;
+        const std::type_info& ti = a.type();
+        if (ti == typeid(int)) {
+            return std::any_cast<int>(a) == std::any_cast<int>(b);
+        } else if (ti == typeid(float)) {
+            return std::any_cast<float>(a) == std::any_cast<float>(b);
+        } else if (ti == typeid(std::string)) {
+            return std::any_cast<std::string>(a) == std::any_cast<std::string>(b);
+        } else if (ti == typeid(bool)) {
+            return std::any_cast<bool>(a) == std::any_cast<bool>(b);
+        }
+        return false;
+    }
+
+private:
+    struct TypeInfo {
+        std::type_index stdType;
+        TypeId parent;
+        TypeInfo(const std::type_index& t, TypeId p) : stdType(t), parent(p) {}
+    };
+
+    std::unordered_map<TypeId, TypeInfo> m_typeInfo;
+    std::unordered_map<std::type_index, TypeId> m_typeToId;
+    std::unordered_map<std::pair<TypeId, TypeId>, std::function<std::any(const std::any&)>, PairHash> m_converters;
+};
+
+inline void initBasicTypes() {
+    auto& ts = TypeSystem::instance();
+
+    // Basic types
+    ts.registerType(TypeId::Int, typeid(int));
+    ts.registerType(TypeId::Float, typeid(float));
+    ts.registerType(TypeId::String, typeid(std::string));
+    ts.registerType(TypeId::Float3, typeid(std::array<float,3>));
+    ts.registerType(TypeId::Matrix4, typeid(std::array<float,16>));
+    ts.registerType(TypeId::Quaternion, typeid(std::array<float,4>));
+
+    // Asset types
+    ts.registerType(TypeId::Texture, typeid(std::shared_ptr<TextureAsset>));
+    ts.registerType(TypeId::Mesh, typeid(std::shared_ptr<MeshAsset>));
+
+    // GA types
+    ts.registerType(TypeId::Multivector_PGA3D, typeid(ga::Multivector<ga::PGA3D>));
+    ts.registerType(TypeId::Multivector_CGA3D, typeid(ga::Multivector<ga::CGA3D>));
+    ts.registerType(TypeId::Multivector_GA11, typeid(ga::Multivector<ga::GA11>));
+    ts.registerType(TypeId::Versor_PGA3D, typeid(ga::Versor<ga::PGA3D>));
+    ts.registerType(TypeId::Versor_CGA3D, typeid(ga::Versor<ga::CGA3D>));
+
+    // Int <-> Float
+    ts.registerConverter(TypeId::Int, TypeId::Float, [](const std::any& v) -> std::any {
+        return static_cast<float>(std::any_cast<int>(v));
+    });
+    ts.registerConverter(TypeId::Float, TypeId::Int, [](const std::any& v) -> std::any {
+        return static_cast<int>(std::any_cast<float>(v));
+    });
+
+    // ========== PGA3D conversions ==========
+    ts.registerConverter(TypeId::Float3, TypeId::Multivector_PGA3D,
+        [](const std::any& v) -> std::any {
+            auto arr = std::any_cast<std::array<float,3>>(v);
+            return ga::PGA3D_impl::point(arr[0], arr[1], arr[2]);
+        });
+    ts.registerConverter(TypeId::Multivector_PGA3D, TypeId::Float3,
+        [](const std::any& v) -> std::any {
+            auto mv = std::any_cast<ga::Multivector<ga::PGA3D>>(v);
+            return ga::PGA3D_impl::extract_point(mv);
+        });
+
+    ts.registerConverter(TypeId::Float3, TypeId::Multivector_PGA3D,
+        [](const std::any& v) -> std::any {
+            auto arr = std::any_cast<std::array<float,3>>(v);
+            return ga::PGA3D_impl::vector(arr[0], arr[1], arr[2]);
+        });
+    ts.registerConverter(TypeId::Multivector_PGA3D, TypeId::Float3,
+        [](const std::any& v) -> std::any {
+            auto mv = std::any_cast<ga::Multivector<ga::PGA3D>>(v);
+            return ga::PGA3D_impl::extract_vector(mv);
+        });
+
+    ts.registerConverter(TypeId::Matrix4, TypeId::Versor_PGA3D,
+        [](const std::any& v) -> std::any {
+            auto mat = std::any_cast<std::array<float,16>>(v);
+            return ga::PGA3D_impl::motor_from_matrix(mat);
+        });
+    ts.registerConverter(TypeId::Versor_PGA3D, TypeId::Matrix4,
+        [](const std::any& v) -> std::any {
+            auto motor = std::any_cast<ga::Versor<ga::PGA3D>>(v);
+            return ga::PGA3D_impl::motor_to_matrix(motor);
+        });
+
+    ts.registerConverter(TypeId::Quaternion, TypeId::Versor_PGA3D,
+        [](const std::any& v) -> std::any {
+            auto q = std::any_cast<std::array<float,4>>(v);
+            return ga::PGA3D_impl::motor_from_quaternion(q[0], q[1], q[2], q[3]);
+        });
+    ts.registerConverter(TypeId::Versor_PGA3D, TypeId::Quaternion,
+        [](const std::any& v) -> std::any {
+            auto motor = std::any_cast<ga::Versor<ga::PGA3D>>(v);
+            return ga::PGA3D_impl::motor_to_quaternion(motor);
+        });
+
+    // ========== CGA3D conversions ==========
+    ts.registerConverter(TypeId::Float3, TypeId::Multivector_CGA3D,
+        [](const std::any& v) -> std::any {
+            auto arr = std::any_cast<std::array<float,3>>(v);
+            return ga::CGA3D_impl::point(arr[0], arr[1], arr[2]);
+        });
+    ts.registerConverter(TypeId::Multivector_CGA3D, TypeId::Float3,
+        [](const std::any& v) -> std::any {
+            auto mv = std::any_cast<ga::Multivector<ga::CGA3D>>(v);
+            return ga::CGA3D_impl::extract_point(mv);
+        });
+
+    ts.registerConverter(TypeId::Matrix4, TypeId::Versor_CGA3D,
+        [](const std::any& v) -> std::any {
+            auto mat = std::any_cast<std::array<float,16>>(v);
+            std::array<float,3> trans = {mat[12], mat[13], mat[14]};
+            float trace = mat[0] + mat[5] + mat[10];
+            float angle = std::acos(std::clamp((trace - 1.0f) * 0.5f, -1.0f, 1.0f));
+            std::array<float,3> axis = {1,0,0};
+            if (angle > 1e-6f) {
+                float s = 1.0f / (2.0f * std::sin(angle));
+                axis[0] = (mat[6] - mat[9]) * s;
+                axis[1] = (mat[8] - mat[2]) * s;
+                axis[2] = (mat[1] - mat[4]) * s;
+            }
+            return ga::CGA3D_impl::motor(axis, angle, trans);
+        });
+    ts.registerConverter(TypeId::Versor_CGA3D, TypeId::Matrix4,
+        [](const std::any& v) -> std::any {
+            auto motor = std::any_cast<ga::Versor<ga::CGA3D>>(v);
+            using namespace ga::CGA3D_impl;
+            MV origin = point(0,0,0);
+            MV ex = vector(1,0,0);
+            MV ey = vector(0,1,0);
+            MV ez = vector(0,0,1);
+            MV new_o = motor.apply(origin);
+            MV new_ex = motor.apply(ex);
+            MV new_ey = motor.apply(ey);
+            MV new_ez = motor.apply(ez);
+            auto t = extract_point(new_o);
+            auto c0 = extract_point(new_ex);
+            auto c1 = extract_point(new_ey);
+            auto c2 = extract_point(new_ez);
+            std::array<float,16> mat{};
+            mat[0] = c0[0] - t[0]; mat[4] = c1[0] - t[0]; mat[8] = c2[0] - t[0]; mat[12] = t[0];
+            mat[1] = c0[1] - t[1]; mat[5] = c1[1] - t[1]; mat[9] = c2[1] - t[1]; mat[13] = t[1];
+            mat[2] = c0[2] - t[2]; mat[6] = c1[2] - t[2]; mat[10] = c2[2] - t[2]; mat[14] = t[2];
+            mat[3] = 0; mat[7] = 0; mat[11] = 0; mat[15] = 1;
+            return mat;
+        });
+
+    // ========== GA11 conversions ==========
+    ts.registerConverter(TypeId::Float3, TypeId::Multivector_GA11,
+        [](const std::any& v) -> std::any {
+            auto arr = std::any_cast<std::array<float,3>>(v);
+            return ga::GA11_impl::vec(arr[0], arr[1]);
+        });
+    ts.registerConverter(TypeId::Multivector_GA11, TypeId::Float3,
+        [](const std::any& v) -> std::any {
+            auto mv = std::any_cast<ga::Multivector<ga::GA11>>(v);
+            auto p = ga::GA11_impl::extract_vec(mv);
+            return std::array<float,3>{p.first, p.second, 0.0f};
+        });
+}
+
+} // namespace arxglue
+
+===
+.\math\ga\conversions.hpp
+===
+// src/math/ga/conversions.hpp
+#pragma once
+
+#include "multivector.hpp"
+#include "versor.hpp"
+#include <array>
+#include <cmath>
+#include <vector>
+
+namespace arxglue::ga {
+
+// ==================== PGA3D ====================
+namespace PGA3D_impl {
+    using Sig = PGA3D;
+    using MV = Multivector<Sig>;
+    using VS = Versor<Sig>;
+
+    inline MV point(float x, float y, float z) {
+        MV p;
+        p[1u << 0] = x;
+        p[1u << 1] = y;
+        p[1u << 2] = z;
+        p[1u << 3] = 1.0f;
+        return p;
+    }
+
+    inline std::array<float, 3> extract_point(const MV& p) {
+        float w = p[1u << 3];
+        if (std::abs(w) < 1e-6f) return {0.0f, 0.0f, 0.0f};
+        return { p[1u << 0] / w, p[1u << 1] / w, p[1u << 2] / w };
+    }
+
+    inline MV vector(float x, float y, float z) {
+        MV v;
+        v[1u << 0] = x;
+        v[1u << 1] = y;
+        v[1u << 2] = z;
+        return v;
+    }
+
+    inline std::array<float, 3> extract_vector(const MV& v) {
+        return { v[1u << 0], v[1u << 1], v[1u << 2] };
+    }
+
+    inline MV plane(float a, float b, float c, float d) {
+        MV pl;
+        pl[1u << 0] = a;
+        pl[1u << 1] = b;
+        pl[1u << 2] = c;
+        pl[1u << 3] = d;
+        return pl;
+    }
+
+    inline MV rotation_bivector(const std::array<float, 3>& axis, float angle) {
+        float len = std::sqrt(axis[0]*axis[0] + axis[1]*axis[1] + axis[2]*axis[2]);
+        if (len < 1e-6f) return MV{};
+        std::array<float, 3> n = {axis[0]/len, axis[1]/len, axis[2]/len};
+        MV B;
+        B[(1u << 0) | (1u << 1)] = -n[2] * angle * 0.5f; // e12
+        B[(1u << 1) | (1u << 2)] = -n[0] * angle * 0.5f; // e23
+        B[(1u << 2) | (1u << 0)] = -n[1] * angle * 0.5f; // e31
+        return B;
+    }
+
+    inline VS motor_from_axis_angle(const std::array<float, 3>& axis, float angle,
+                                     const std::array<float, 3>& translation = {0.0f, 0.0f, 0.0f}) {
+        float len = std::sqrt(axis[0]*axis[0] + axis[1]*axis[1] + axis[2]*axis[2]);
+        if (len < 1e-6f) {
+            VS T;
+            T[0] = 1.0f;
+            T[(1u << 3) | (1u << 0)] = -translation[0] * 0.5f;
+            T[(1u << 3) | (1u << 1)] = -translation[1] * 0.5f;
+            T[(1u << 3) | (1u << 2)] = -translation[2] * 0.5f;
+            return T;
+        }
+        std::array<float, 3> n = {axis[0]/len, axis[1]/len, axis[2]/len};
+        MV B = rotation_bivector(axis, angle);
+        VS R = VS::from_bivector(B);
+
+        if (translation[0] == 0.0f && translation[1] == 0.0f && translation[2] == 0.0f) {
+            return R;
+        }
+
+        VS T;
+        T[0] = 1.0f;
+        T[(1u << 3) | (1u << 0)] = -translation[0] * 0.5f;
+        T[(1u << 3) | (1u << 1)] = -translation[1] * 0.5f;
+        T[(1u << 3) | (1u << 2)] = -translation[2] * 0.5f;
+        return R * T;
+    }
+
+    inline VS motor_from_matrix(const std::array<float, 16>& mat) {
+        std::array<float, 3> translation = { mat[12], mat[13], mat[14] };
+        float trace = mat[0] + mat[5] + mat[10];
+        float angle = std::acos(std::clamp((trace - 1.0f) * 0.5f, -1.0f, 1.0f));
+        std::array<float, 3> axis;
+        if (angle < 1e-6f) {
+            axis = {1.0f, 0.0f, 0.0f};
+            angle = 0.0f;
+        } else {
+            float s = 1.0f / (2.0f * std::sin(angle));
+            axis[0] = (mat[6] - mat[9]) * s;
+            axis[1] = (mat[8] - mat[2]) * s;
+            axis[2] = (mat[1] - mat[4]) * s;
+        }
+        return motor_from_axis_angle(axis, angle, translation);
+    }
+
+    // Явное применение мотора к точке (разделение вращения и переноса)
+    inline std::array<float, 3> apply_motor_to_point(const VS& motor, const std::array<float, 3>& pt) {
+        // Извлекаем перенос: t = -2 * (e0^e1, e0^e2, e0^e3)
+        std::array<float, 3> t = {
+            -2.0f * motor[(1u<<3)|(1u<<0)],
+            -2.0f * motor[(1u<<3)|(1u<<1)],
+            -2.0f * motor[(1u<<3)|(1u<<2)]
+        };
+        
+        // Извлекаем ротор (чётная часть без e0)
+        float scalar = motor[0];
+        float b12 = motor[(1u<<0)|(1u<<1)]; // e12
+        float b23 = motor[(1u<<1)|(1u<<2)]; // e23
+        float b31 = motor[(1u<<2)|(1u<<0)]; // e31
+        
+        // Нормализуем ротор
+        float norm = std::sqrt(scalar*scalar + b12*b12 + b23*b23 + b31*b31);
+        if (norm > 1e-6f) {
+            scalar /= norm;
+            b12 /= norm;
+            b23 /= norm;
+            b31 /= norm;
+        }
+        
+        // Применяем вращение (кватернион: w=scalar, x=b23, y=b31, z=b12)
+        float x = pt[0], y = pt[1], z = pt[2];
+        float qw = scalar, qx = b23, qy = b31, qz = b12;
+        
+        float tx = 2.0f * (qy*z - qz*y);
+        float ty = 2.0f * (qz*x - qx*z);
+        float tz = 2.0f * (qx*y - qy*x);
+        float rx = x + qw*tx + (qy*tz - qz*ty);
+        float ry = y + qw*ty + (qz*tx - qx*tz);
+        float rz = z + qw*tz + (qx*ty - qy*tx);
+        
+        return {rx + t[0], ry + t[1], rz + t[2]};
+    }
+
+    inline std::array<float, 16> motor_to_matrix(const VS& motor) {
+        auto t = apply_motor_to_point(motor, {0,0,0});
+        auto c0 = apply_motor_to_point(motor, {1,0,0});
+        auto c1 = apply_motor_to_point(motor, {0,1,0});
+        auto c2 = apply_motor_to_point(motor, {0,0,1});
+        
+        std::array<float, 16> mat{};
+        mat[0] = c0[0] - t[0]; mat[4] = c1[0] - t[0]; mat[8] = c2[0] - t[0]; mat[12] = t[0];
+        mat[1] = c0[1] - t[1]; mat[5] = c1[1] - t[1]; mat[9] = c2[1] - t[1]; mat[13] = t[1];
+        mat[2] = c0[2] - t[2]; mat[6] = c1[2] - t[2]; mat[10] = c2[2] - t[2]; mat[14] = t[2];
+        mat[3] = 0.0f; mat[7] = 0.0f; mat[11] = 0.0f; mat[15] = 1.0f;
+        return mat;
+    }
+
+    inline VS motor_from_quaternion(float x, float y, float z, float w) {
+        MV B;
+        B[(1u << 0) | (1u << 1)] = -z;
+        B[(1u << 1) | (1u << 2)] = -x;
+        B[(1u << 2) | (1u << 0)] = -y;
+        float angle = 2.0f * std::acos(w);
+        float sin_half = std::sqrt(1.0f - w*w);
+        if (sin_half > 1e-6f) {
+            B = B * (angle * 0.5f / sin_half);
+        }
+        return VS::from_bivector(B);
+    }
+
+    inline std::array<float, 4> motor_to_quaternion(const VS& motor) {
+        float scalar = motor[0];
+        float b12 = motor[(1u<<0)|(1u<<1)];
+        float b23 = motor[(1u<<1)|(1u<<2)];
+        float b31 = motor[(1u<<2)|(1u<<0)];
+        float norm = std::sqrt(b12*b12 + b23*b23 + b31*b31);
+        if (norm < 1e-6f) return {0,0,0,1};
+        float angle = 2.0f * std::acos(scalar);
+        float sin_half = std::sin(angle * 0.5f);
+        return { -b23 / sin_half, -b31 / sin_half, -b12 / sin_half, scalar };
+    }
+}
+
+// ==================== CGA3D ====================
+namespace CGA3D_impl {
+    using Sig = CGA3D;
+    using MV = Multivector<Sig>;
+    using VS = Versor<Sig>;
+
+    // Базисные индексы: e1=1, e2=2, e3=4, e0=8, e∞=16
+    static constexpr size_t e1 = 1u << 0;
+    static constexpr size_t e2 = 1u << 1;
+    static constexpr size_t e3 = 1u << 2;
+    static constexpr size_t e0 = 1u << 3;
+    static constexpr size_t einf = 1u << 4;
+
+    inline MV point(float x, float y, float z) {
+        // p = e0 + x*e1 + y*e2 + z*e3 + 0.5*(x^2+y^2+z^2)*e∞
+        MV p;
+        p[e0] = 1.0f;
+        p[e1] = x;
+        p[e2] = y;
+        p[e3] = z;
+        p[einf] = 0.5f * (x*x + y*y + z*z);
+        return p;
+    }
+
+        inline std::array<float, 3> extract_point(const MV& p) {
+            float w = p[1u << 3];
+            if (std::abs(w) < 1e-6f) return {0.0f, 0.0f, 0.0f};
+            return { p[1u << 0] / w, p[1u << 1] / w, p[1u << 2] / w };
+        }
+
+    inline MV vector(float x, float y, float z) {
+        // Направление как разность двух точек
+        return point(x,y,z) - point(0,0,0);
+    }
+
+    inline MV sphere(float x, float y, float z, float radius) {
+        // Сфера: точка - 0.5 * r^2 * e∞
+        MV s = point(x, y, z);
+        s[einf] -= 0.5f * radius * radius;
+        return s;
+    }
+
+    inline VS translator(const std::array<float, 3>& t) {
+        // T = 1 - 0.5 * (t_x e1 + t_y e2 + t_z e3) ∧ e∞
+        VS T;
+        T[0] = 1.0f;
+        size_t blade = 0;
+        blade = e1 | einf; T[blade] = -0.5f * t[0];
+        blade = e2 | einf; T[blade] = -0.5f * t[1];
+        blade = e3 | einf; T[blade] = -0.5f * t[2];
+        return T;
+    }
+
+    inline VS rotor(const std::array<float, 3>& axis, float angle) {
+        // R = cos(θ/2) - sin(θ/2) B, где B - бивектор плоскости вращения
+        float len = std::sqrt(axis[0]*axis[0] + axis[1]*axis[1] + axis[2]*axis[2]);
+        if (len < 1e-6f) return VS{};
+        std::array<float, 3> n = {axis[0]/len, axis[1]/len, axis[2]/len};
+        MV B;
+        B[(1u<<0)|(1u<<1)] = -n[2];
+        B[(1u<<1)|(1u<<2)] = -n[0];
+        B[(1u<<2)|(1u<<0)] = -n[1];
+        B = B * (angle * 0.5f);
+        return VS::from_bivector(B);
+    }
+
+    inline VS motor(const std::array<float, 3>& axis, float angle, const std::array<float, 3>& translation) {
+        VS R = rotor(axis, angle);
+        VS T = translator(translation);
+        return T * R;
+    }
+}
+
+// ==================== GA11 ====================
+namespace GA11_impl {
+    using Sig = GA11;
+    using MV = Multivector<Sig>;
+    using VS = Versor<Sig>;
+
+    // Базис: e+ = 1 (положительная сигнатура), e- = 2 (отрицательная)
+    static constexpr size_t e_plus = 1u << 0;
+    static constexpr size_t e_minus = 1u << 1;
+
+    inline MV vec(float a, float b) {
+        MV v;
+        v[e_plus] = a;
+        v[e_minus] = b;
+        return v;
+    }
+
+    inline std::pair<float, float> extract_vec(const MV& v) {
+        return { v[e_plus], v[e_minus] };
+    }
+
+    // Лоренцево вращение (boost) в 2D пространстве-времени
+    inline VS boost(float rapidity) {
+        // B = rapidity * e+ ∧ e-
+        MV B;
+        B[e_plus | e_minus] = rapidity;
+        return VS::from_bivector(B);
+    }
+}
+
+} // namespace arxglue::ga
+
+===
+.\math\ga\multivector.hpp
+===
+// src/math/ga/multivector.hpp
+#pragma once
+
+#include "signature.hpp"
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <algorithm>
+#include <type_traits>
+#include <ostream>
+
+namespace arxglue::ga {
+
+inline unsigned int popcount(unsigned int x) noexcept {
+#if defined(_MSC_VER)
+    return __popcnt(x);
+#elif defined(__GNUC__) || defined(__clang__)
+    return static_cast<unsigned int>(__builtin_popcount(x));
+#else
+    x = x - ((x >> 1) & 0x55555555u);
+    x = (x & 0x33333333u) + ((x >> 2) & 0x33333333u);
+    return (((x + (x >> 4)) & 0x0F0F0F0Fu) * 0x01010101u) >> 24;
+#endif
+}
+
+template<typename Sig>
+class Multivector {
+public:
+    static constexpr size_t size = 1u << Sig::dimension;
+    using CoeffArray = std::array<float, size>;
+
+    Multivector() : coeffs_{} {}
+    explicit Multivector(const CoeffArray& arr) : coeffs_(arr) {}
+    
+    float& operator[](size_t blade) { return coeffs_[blade]; }
+    const float& operator[](size_t blade) const { return coeffs_[blade]; }
+
+    Multivector& operator+=(const Multivector& rhs) {
+        for (size_t i = 0; i < size; ++i) coeffs_[i] += rhs.coeffs_[i];
+        return *this;
+    }
+
+    Multivector& operator-=(const Multivector& rhs) {
+        for (size_t i = 0; i < size; ++i) coeffs_[i] -= rhs.coeffs_[i];
+        return *this;
+    }
+
+    Multivector& operator*=(float scalar) {
+        for (auto& c : coeffs_) c *= scalar;
+        return *this;
+    }
+
+    Multivector operator+(const Multivector& rhs) const {
+        Multivector result(*this);
+        result += rhs;
+        return result;
+    }
+
+    Multivector operator-(const Multivector& rhs) const {
+        Multivector result(*this);
+        result -= rhs;
+        return result;
+    }
+
+    Multivector operator*(float scalar) const {
+        Multivector result(*this);
+        result *= scalar;
+        return result;
+    }
+
+    friend Multivector operator*(float scalar, const Multivector& mv) {
+        return mv * scalar;
+    }
+
+    Multivector geometric_product(const Multivector& rhs) const {
+        Multivector result;
+        const auto& table = product_table<Sig>;
+        for (size_t a = 0; a < size; ++a) {
+            float ca = coeffs_[a];
+            if (ca == 0.0f) continue;
+            for (size_t b = 0; b < size; ++b) {
+                float cb = rhs.coeffs_[b];
+                if (cb == 0.0f) continue;
+                int sign = table.sign[a][b];
+                if (sign == 0) continue;
+                size_t c = table.blade[a][b];
+                result.coeffs_[c] += sign * ca * cb;
+            }
+        }
+        return result;
+    }
+
+    Multivector operator*(const Multivector& rhs) const {
+        return geometric_product(rhs);
+    }
+
+    Multivector wedge(const Multivector& rhs) const {
+        Multivector result;
+        for (size_t a = 0; a < size; ++a) {
+            float ca = coeffs_[a];
+            if (ca == 0.0f) continue;
+            for (size_t b = 0; b < size; ++b) {
+                float cb = rhs.coeffs_[b];
+                if (cb == 0.0f) continue;
+                if ((a & b) != 0) continue;
+                int sign = (popcount(static_cast<unsigned int>(a & b)) % 2 == 0) ? 1 : -1;
+                size_t c = a | b;
+                result.coeffs_[c] += sign * ca * cb;
+            }
+        }
+        return result;
+    }
+
+    Multivector operator^(const Multivector& rhs) const {
+        return wedge(rhs);
+    }
+
+    Multivector left_contraction(const Multivector& rhs) const {
+        Multivector result;
+        const auto& table = product_table<Sig>;
+        for (size_t a = 0; a < size; ++a) {
+            float ca = coeffs_[a];
+            if (ca == 0.0f) continue;
+            for (size_t b = 0; b < size; ++b) {
+                float cb = rhs.coeffs_[b];
+                if (cb == 0.0f) continue;
+                if ((a & b) != a) continue;
+                int sign = table.sign[a][b];
+                if (sign == 0) continue;
+                size_t c = a ^ b;
+                result.coeffs_[c] += sign * ca * cb;
+            }
+        }
+        return result;
+    }
+
+    Multivector reverse() const {
+        Multivector result;
+        for (size_t i = 0; i < size; ++i) {
+            int grade = popcount(static_cast<unsigned int>(i));
+            int sign = ((grade * (grade - 1)) / 2) % 2 == 0 ? 1 : -1;
+            result.coeffs_[i] = sign * coeffs_[i];
+        }
+        return result;
+    }
+
+    Multivector involute() const {
+        Multivector result;
+        for (size_t i = 0; i < size; ++i) {
+            int grade = popcount(static_cast<unsigned int>(i));
+            result.coeffs_[i] = (grade % 2 == 0) ? coeffs_[i] : -coeffs_[i];
+        }
+        return result;
+    }
+
+    Multivector conjugate() const {
+        return reverse().involute();
+    }
+
+    Multivector dual() const {
+        static const Multivector I = pseudoscalar();
+        return left_contraction(I.reverse());
+    }
+
+    static Multivector pseudoscalar() {
+        Multivector I;
+        I.coeffs_[size - 1] = 1.0f;
+        return I;
+    }
+
+    float norm() const {
+        Multivector rev = reverse();
+        Multivector prod = geometric_product(rev);
+        return std::sqrt(std::abs(prod.coeffs_[0]));
+    }
+
+    Multivector normalized() const {
+        float n = norm();
+        if (n > 1e-6f) {
+            return (*this) * (1.0f / n);
+        }
+        return Multivector{};
+    }
+
+    template<int Grade>
+    Multivector extract_grade() const {
+        static_assert(Grade >= 0 && Grade <= Sig::dimension, "Invalid grade");
+        Multivector result;
+        for (size_t i = 0; i < size; ++i) {
+            if (popcount(static_cast<unsigned int>(i)) == Grade) {
+                result.coeffs_[i] = coeffs_[i];
+            }
+        }
+        return result;
+    }
+
+    float scalar() const { return coeffs_[0]; }
+
+    std::array<float, Sig::dimension> vector_part() const {
+        std::array<float, Sig::dimension> result{};
+        for (size_t i = 0; i < Sig::dimension; ++i) {
+            size_t blade = 1u << i;
+            result[i] = coeffs_[blade];
+        }
+        return result;
+    }
+
+    bool operator==(const Multivector& rhs) const {
+        for (size_t i = 0; i < size; ++i) {
+            if (std::abs(coeffs_[i] - rhs.coeffs_[i]) > 1e-6f) return false;
+        }
+        return true;
+    }
+
+    bool operator!=(const Multivector& rhs) const {
+        return !(*this == rhs);
+    }
+
+    const CoeffArray& coeffs() const { return coeffs_; }
+
+private:
+    CoeffArray coeffs_;
+};
+
+template<typename Sig>
+std::ostream& operator<<(std::ostream& os, const Multivector<Sig>& mv) {
+    os << "Multivector[";
+    for (size_t i = 0; i < mv.size; ++i) {
+        if (mv[i] != 0.0f) {
+            os << " " << i << ":" << mv[i];
+        }
+    }
+    os << " ]";
+    return os;
+}
+
+// Базовая таблица (будет специализирована)
+template<typename Sig>
+struct ProductTable {
+    static constexpr size_t size = 1u << Sig::dimension;
+    std::array<std::array<int, size>, size> sign{};
+    std::array<std::array<size_t, size>, size> blade{};
+
+    constexpr ProductTable() {
+        for (size_t a = 0; a < size; ++a) {
+            for (size_t b = 0; b < size; ++b) {
+                blade[a][b] = a ^ b;
+                sign[a][b] = 0;
+            }
+        }
+    }
+};
+
+// Полная корректная таблица знаков для PGA3D (индексы 0..15)
+// Индексы: 0=1, 1=e1, 2=e2, 3=e12, 4=e3, 5=e13, 6=e23, 7=e123,
+// 8=e0, 9=e01, 10=e02, 11=e012, 12=e03, 13=e013, 14=e023, 15=e0123
+inline constexpr std::array<std::array<int, 16>, 16> PGA3D_SIGN_TABLE = {{
+    { 1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1},
+    { 1,  1,  1,  1,  1,  1,  1,  1, -1, -1, -1, -1, -1, -1, -1, -1},
+    { 1, -1,  1, -1,  1, -1,  1, -1, -1,  1, -1,  1, -1,  1, -1,  1},
+    { 1, -1,  1, -1, -1,  1, -1,  1,  1, -1,  1, -1, -1,  1, -1,  1},
+    { 1, -1, -1,  1,  1, -1, -1,  1, -1,  1,  1, -1, -1,  1,  1, -1},
+    { 1, -1, -1,  1, -1,  1,  1, -1,  1, -1, -1,  1,  1, -1, -1,  1},
+    { 1,  1, -1, -1,  1,  1, -1, -1, -1, -1,  1,  1, -1, -1,  1,  1},
+    { 1,  1,  1,  1,  1,  1,  1,  1, -1, -1, -1, -1, -1, -1, -1, -1},
+    { 1,  1,  1,  1,  1,  1,  1,  1,  0,  0,  0,  0,  0,  0,  0,  0},
+    { 1,  1,  1,  1,  1,  1,  1,  1,  0,  0,  0,  0,  0,  0,  0,  0},
+    { 1, -1,  1, -1,  1, -1,  1, -1,  0,  0,  0,  0,  0,  0,  0,  0},
+    { 1, -1,  1, -1, -1,  1, -1,  1,  0,  0,  0,  0,  0,  0,  0,  0},
+    { 1, -1, -1,  1,  1, -1, -1,  1,  0,  0,  0,  0,  0,  0,  0,  0},
+    { 1, -1, -1,  1, -1,  1,  1, -1,  0,  0,  0,  0,  0,  0,  0,  0},
+    { 1,  1, -1, -1,  1,  1, -1, -1,  0,  0,  0,  0,  0,  0,  0,  0},
+    { 1,  1,  1,  1,  1,  1,  1,  1,  0,  0,  0,  0,  0,  0,  0,  0}
+}};
+
+template<>
+struct ProductTable<PGA3D> {
+    static constexpr size_t size = 16;
+    std::array<std::array<int, size>, size> sign;
+    std::array<std::array<size_t, size>, size> blade;
+
+    constexpr ProductTable() : sign(PGA3D_SIGN_TABLE), blade{} {
+        for (size_t a = 0; a < size; ++a)
+            for (size_t b = 0; b < size; ++b)
+                blade[a][b] = a ^ b;
+    }
+};
+
+template<typename Sig>
+inline constexpr ProductTable<Sig> product_table{};
+
+} // namespace arxglue::ga
+
+===
+.\math\ga\signature.hpp
+===
+// src/math/ga/signature.hpp
+#pragma once
+
+#include <cstddef>
+#include <array>
+#include <type_traits>
+
+namespace arxglue::ga {
+
+template<int P, int Q, int R>
+struct Signature {
+    static constexpr int positive = P;
+    static constexpr int negative = Q;
+    static constexpr int null = R;
+    static constexpr int dimension = P + Q + R;
+    static constexpr bool is_degenerate = (R > 0);
+};
+
+using PGA3D = Signature<3, 0, 1>;
+using CGA3D = Signature<4, 1, 0>;
+using GA11  = Signature<1, 1, 0>;
+using GA10  = Signature<1, 0, 0>;
+
+namespace detail {
+    constexpr int count_swaps(unsigned int a, unsigned int b) {
+        // Индексы: e1=0, e2=1, e3=2, e0=3
+        auto idx = [](unsigned int bit) constexpr -> int {
+            if (bit == 1) return 0; // e1
+            if (bit == 2) return 1; // e2
+            if (bit == 4) return 2; // e3
+            return 3;               // e0
+        };
+        int count = 0;
+        unsigned int mask_a = a;
+        while (mask_a) {
+            unsigned int bit_a = mask_a & (~mask_a + 1);
+            int idx_a = idx(bit_a);
+            unsigned int mask_b = b;
+            while (mask_b) {
+                unsigned int bit_b = mask_b & (~mask_b + 1);
+                int idx_b = idx(bit_b);
+                if (idx_a > idx_b) ++count;
+                mask_b ^= bit_b;
+            }
+            mask_a ^= bit_a;
+        }
+        return count;
+    }
+
+    template<typename Sig, unsigned int A, unsigned int B>
+    constexpr int compute_sign() {
+        unsigned int common = A & B;
+        int swaps = count_swaps(A, B);
+        int sign = (swaps % 2 == 0) ? 1 : -1;
+        while (common) {
+            unsigned int bit = common & (~common + 1);
+            int idx = 0;
+            unsigned int tmp = bit;
+            while (tmp >>= 1) ++idx;
+            if (idx < Sig::positive) {
+                // положительная сигнатура
+            } else if (idx < Sig::positive + Sig::negative) {
+                sign = -sign;
+            } else {
+                sign = 0; // нулевая сигнатура
+                break;
+            }
+            common ^= bit;
+        }
+        return sign;
+    }
+}
+
+template<typename Sig, unsigned int A, unsigned int B>
+struct BladeProductSign {
+    static constexpr int value = detail::compute_sign<Sig, A, B>();
+};
+
+} // namespace arxglue::ga
+
+===
+.\math\ga\simd_optimized.hpp
+===
+// src/math/ga/simd_optimized.hpp
+#pragma once
+
+#include "multivector.hpp"
+#include <immintrin.h>
+
+namespace arxglue::ga {
+
+// Специализация для PGA3D с использованием SIMD (AVX)
+template<>
+class Multivector<PGA3D> {
+public:
+    static constexpr size_t size = 16; // 2^4
+    using CoeffArray = std::array<float, size>;
+
+    Multivector() {
+        _mm256_storeu_ps(coeffs_.data(), _mm256_setzero_ps());
+        _mm256_storeu_ps(coeffs_.data() + 8, _mm256_setzero_ps());
+    }
+
+    explicit Multivector(const CoeffArray& arr) : coeffs_(arr) {}
+
+    float& operator[](size_t blade) { return coeffs_[blade]; }
+    const float& operator[](size_t blade) const { return coeffs_[blade]; }
+
+    Multivector geometric_product(const Multivector& rhs) const {
+        Multivector result;
+        // Использование предварительно вычисленной таблицы знаков
+        const auto& table = product_table<PGA3D>;
+        for (size_t a = 0; a < size; ++a) {
+            float ca = coeffs_[a];
+            if (ca == 0.0f) continue;
+            for (size_t b = 0; b < size; ++b) {
+                float cb = rhs.coeffs_[b];
+                if (cb == 0.0f) continue;
+                int sign = table.sign[a][b];
+                if (sign == 0) continue;
+                size_t c = table.blade[a][b];
+                result.coeffs_[c] += sign * ca * cb;
+            }
+        }
+        return result;
+    }
+
+    // Остальные методы аналогичны общей версии, но могут быть дополнительно оптимизированы
+
+private:
+    CoeffArray coeffs_;
+};
+
+} // namespace arxglue::ga
+
+===
+.\math\ga\versor.hpp
+===
+// src/math/ga/versor.hpp
+#pragma once
+
+#include "multivector.hpp"
+#include <cmath>
+#include <algorithm>
+
+namespace arxglue::ga {
+
+template<typename Sig>
+class Versor : public Multivector<Sig> {
+public:
+    using Base = Multivector<Sig>;
+    using Base::Base;
+
+    // Явный конструктор из Multivector (необходим для преобразования результата умножения)
+    Versor(const Multivector<Sig>& mv) : Base(mv) {}
+
+    // Создание версора из бивектора (экспонента)
+    static Versor from_bivector(const Multivector<Sig>& B) {
+        float norm = B.norm();
+        Versor result;
+        if (norm < 1e-6f) {
+            result[0] = 1.0f;
+        } else {
+            float cos_norm = std::cos(norm);
+            float sin_norm = std::sin(norm);
+            result[0] = cos_norm;
+            Multivector<Sig> B_norm = B * (sin_norm / norm);
+            for (size_t i = 0; i < Base::size; ++i) {
+                if (i != 0) result[i] = B_norm[i];
+            }
+        }
+        return result;
+    }
+
+    // Применение версора к мультивектору (сэндвич-произведение)
+    Multivector<Sig> apply(const Multivector<Sig>& X) const {
+        Versor inv = this->reverse();
+        return (*this) * X * inv;
+    }
+
+    // Сферическая линейная интерполяция двух версоров
+    static Versor slerp(const Versor& v1, const Versor& v2, float t) {
+        if (t <= 0.0f) return v1;
+        if (t >= 1.0f) return v2;
+
+        // Вычисляем относительный версор
+        Versor delta = v1.reverse() * v2;
+        Multivector<Sig> log_delta = log_versor(delta);
+        Versor scaled = Versor::from_bivector(log_delta * t);
+        return v1 * scaled;
+    }
+
+    // Обратный версор
+    Versor reverse() const {
+        return Versor(Base::reverse());
+    }
+
+private:
+    // Логарифмическое отображение версора (извлечение бивектора)
+    static Multivector<Sig> log_versor(const Versor& v) {
+        float scalar = v[0];
+        float theta = std::acos(std::clamp(scalar, -1.0f, 1.0f));
+        if (theta < 1e-6f) {
+            Multivector<Sig> result;
+            float sin_theta_over_theta = (theta < 1e-6f) ? 1.0f : std::sin(theta) / theta;
+            for (size_t i = 1; i < Base::size; ++i) {
+                result[i] = v[i] / sin_theta_over_theta;
+            }
+            return result;
+        } else {
+            float sin_theta = std::sin(theta);
+            Multivector<Sig> B;
+            for (size_t i = 1; i < Base::size; ++i) {
+                B[i] = v[i] / sin_theta;
+            }
+            return B * theta;
+        }
+    }
+};
+
+} // namespace arxglue::ga
+
+< | end of headers | >

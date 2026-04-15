@@ -1,0 +1,55 @@
+# cmake/ArxSoundConfig.cmake.in
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Check for required dependencies
+set(AS_HAS_ARXGLUE @AS_ENABLE_ARXGLUE@)
+
+if(AS_HAS_ARXGLUE)
+    find_dependency(ArxGlue REQUIRED)
+endif()
+
+# Platform-specific dependencies
+if(WIN32)
+    # Windows libraries are system libraries, no need to find
+elseif(LINUX)
+    if(@AS_ENABLE_ALSA@)
+        find_dependency(ALSA)
+    endif()
+    if(@AS_ENABLE_PULSEAUDIO@)
+        find_dependency(PulseAudio)
+    endif()
+    if(@AS_ENABLE_JACK@)
+        find_dependency(JACK)
+    endif()
+elseif(APPLE)
+    # Frameworks are system frameworks, no need to find
+endif()
+
+# Include the targets file
+include("${CMAKE_CURRENT_LIST_DIR}/ArxSoundTargets.cmake")
+
+# Check that all required components are found
+check_required_components(ArxSound)
+
+# Provide some useful variables
+set(ARXSOUND_INCLUDE_DIRS "@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")
+set(ARXSOUND_LIBRARIES ArxSound::ArxSound)
+set(ARXSOUND_VERSION "@PROJECT_VERSION@")
+set(ARXSOUND_VERSION_MAJOR "@PROJECT_VERSION_MAJOR@")
+set(ARXSOUND_VERSION_MINOR "@PROJECT_VERSION_MINOR@")
+set(ARXSOUND_VERSION_REVISION "@PROJECT_VERSION_REVISION@")
+
+# Backend availability
+set(ARXSOUND_HAS_WASAPI @AS_ENABLE_WASAPI@)
+set(ARXSOUND_HAS_DSOUND @AS_ENABLE_DSOUND@)
+set(ARXSOUND_HAS_WINMM @AS_ENABLE_WINMM@)
+set(ARXSOUND_HAS_ALSA @AS_ENABLE_ALSA@)
+set(ARXSOUND_HAS_PULSEAUDIO @AS_ENABLE_PULSEAUDIO@)
+set(ARXSOUND_HAS_JACK @AS_ENABLE_JACK@)
+set(ARXSOUND_HAS_COREAUDIO @AS_ENABLE_COREAUDIO@)
+set(ARXSOUND_HAS_AAUDIO @AS_ENABLE_AAUDIO@)
+set(ARXSOUND_HAS_OPENSL @AS_ENABLE_OPENSL@)
+set(ARXSOUND_HAS_WEBAUDIO @AS_ENABLE_WEBAUDIO@)
+set(ARXSOUND_HAS_ARXGLUE @AS_ENABLE_ARXGLUE@)

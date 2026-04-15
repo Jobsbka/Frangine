@@ -1,0 +1,23 @@
+ArxSound/
+├── include/
+│   ├── arxsound.hpp           # Главный публичный API
+│   ├── arxsound_types.hpp     # Базовые типы, ошибки, форматы
+│   ├── arxsound_context.hpp   # Контекст и инициализация
+│   ├── arxsound_device.hpp    # Устройство (playback/capture)
+│   ├── arxsound_convert.hpp   # Конвертеры данных
+│   ├── arxsound_backend.hpp   # Абстракция бэкендов
+│   └── arxsound_log.hpp       # Система логирования
+├── src/
+│   ├── arxsound.cpp           # Ядро библиотеки
+│   ├── arxsound_context.cpp
+│   ├── arxsound_device.cpp
+│   ├── arxsound_convert.cpp
+│   ├── arxsound_log.cpp
+│   └── backends/
+│       ├── backend_null.cpp   # Null-бэкенд (всегда доступен)
+│       ├── backend_wasapi.cpp # Windows WASAPI
+│       ├── backend_alsa.cpp   # Linux ALSA
+│       └── ...                # Остальные бэкенды
+├── arxglue/
+│   └── arxsound_node.hpp      # Интеграция с протоколом ArxGlue
+└── CMakeLists.txt
