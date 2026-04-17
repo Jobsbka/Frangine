@@ -1,0 +1,27 @@
+ArxRender/
+├── include/
+│   ├── arxrender.hpp           # Главный API, версии, макросы
+│   ├── arxrender_types.hpp     # Форматы, флаги, перечисления, лимиты
+│   ├── arxrender_log.hpp       # Система логирования
+│   ├── arxrender_context.hpp   # Глобальный контекст, выбор бэкенда
+│   ├── arxrender_backend.hpp   # Абстракция бэкендов, колбэки, регистрация
+│   ├── arxrender_surface.hpp   # Окно/поверхность, свопчейн, презентация
+│   ├── arxrender_device.hpp    # Логическое устройство, создание ресурсов
+│   ├── arxrender_resource.hpp  # Буферы, текстуры, семплеры
+│   ├── arxrender_pipeline.hpp  # Шейдеры, PSO, материалы (юниформы)
+│   └── arxrender_command.hpp   # Командные буферы, запись, исполнение
+├── src/
+│   ├── arxrender.cpp
+│   ├── arxrender_context.cpp
+│   ├── arxrender_device.cpp
+│   ├── arxrender_resource.cpp
+│   ├── arxrender_pipeline.cpp
+│   ├── arxrender_command.cpp
+│   ├── arxrender_log.cpp
+│   └── backends/
+│       ├── backend_null.cpp    # Заглушка (CI/тесты)
+│       ├── backend_opengl.cpp  # Адаптация текущего 3Tone OpenGL кода
+│       ├── backend_vulkan.cpp  # Вулкан-бэкенд
+│       └── ...
+└── arxglue/
+    └── arxrender_nodes.hpp     # Узлы для ArxGlue (загрузка, пайплайн, отрисовка, презент)
